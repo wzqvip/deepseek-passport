@@ -51,8 +51,11 @@ On the home screen:
 | --- | --- |
 | **Hold OK, speak, release** | A spoken turn: record → transcribe → ask DeepSeek → answer on screen and spoken |
 | Hold DOWN | Work mode |
-| Hold UP | The setup screen: the join QR code, the hotspot name and password, the address |
+| Hold UP | The setup screen: the join QR code, the hotspot name and password, the address. **On a device that is already on a network this asks first** — the hint line becomes "OK: re-provision, DOWN: cancel" — and it expires after twelve seconds if nobody answers |
 | Double-press UP | Stand by: deep sleep, waking on any key |
+
+The top-right corner shows whether the device is on a network and how well, next to the battery: the word
+`WiFi` with three bars lit from the signal, or `--` with none lit when there is no association.
 
 On the work screen: UP and DOWN move the selection, OK confirms, holding OK goes home.
 

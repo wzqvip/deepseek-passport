@@ -44,6 +44,7 @@ $ErrorActionPreference = 'Stop'
 function Open-Console {
     $sp = New-Object System.IO.Ports.SerialPort $Port, $Baud, 'None', 8, 'One'
     $sp.ReadTimeout = 200
+    $sp.Encoding = [System.Text.Encoding]::UTF8
     $sp.DtrEnable = $false
     $sp.RtsEnable = $false
     $sp.Open()
@@ -53,19 +54,22 @@ function Open-Console {
 function Read-Until {
     param($sp, [string]$Pattern, [int]$TimeoutMs)
     $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
-    $sb = New-Object System.Text.StringBuilder
+    # Bytes, decoded as UTF-8 at the end: the device speaks Chinese in its logs and its interface, and
+    # appending one char per byte turns every one of those into mojibake.
+    $bytes = New-Object System.Collections.Generic.List[byte]
     while ((Get-Date) -lt $deadline) {
         $got = $false
         try {
             while ($sp.BytesToRead -gt 0) {
                 $x = $sp.ReadByte()
-                if ($x -ge 0) { [void]$sb.Append([char]$x); $got = $true }
+                if ($x -ge 0) { $bytes.Add([byte]$x); $got = $true }
             }
         } catch { break }
-        if ($sb.ToString() -match $Pattern) { break }
+        $text = [System.Text.Encoding]::UTF8.GetString($bytes.ToArray())
+        if ($text -match $Pattern) { break }
         if (-not $got) { Start-Sleep -Milliseconds 25 }
     }
-    return $sb.ToString()
+    return [System.Text.Encoding]::UTF8.GetString($bytes.ToArray())
 }
 
 function Show-Output {
@@ -111,6 +115,13 @@ try {
     }
 
     foreach ($c in $commands) {
+        # A script line may be "sleep <ms>": some behaviour only happens with time passing, such as a
+        # confirmation that expires if nobody answers, and a test that cannot wait cannot check it.
+        if ($c -match '^sleep\s+(\d+)$') {
+            Start-Sleep -Milliseconds ([int]$Matches[1])
+            if (-not $Quiet) { Write-Output "--- waited $($Matches[1]) ms" }
+            continue
+        }
         if (-not $Quiet) { Write-Output "--- $c" }
         $sp.DiscardInBuffer()
         $sp.Write($c + "`r`n")

@@ -44,6 +44,11 @@ int passport_wifi_scan(passport_wifi_ap_t *out, int max, uint32_t timeout_ms);
 // `timeout_ms`. Refuses before touching the radio when no SSID is configured.
 esp_err_t passport_wifi_connect(uint32_t timeout_ms);
 
+// The signal of the access point this station is associated with, in dBm, or -128 when it is not
+// associated. Read on demand rather than cached: the interface shows it, and a stale number in the
+// corner of the screen is worse than none.
+int passport_wifi_rssi(void);
+
 // Drop the association. The stored credentials are left alone.
 esp_err_t passport_wifi_disconnect(void);
 

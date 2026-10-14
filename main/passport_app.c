@@ -27,6 +27,7 @@
 #include "passport_audio.h"
 #include "passport_chat.h"
 #include "passport_config_store.h"
+#include "esp_timer.h"
 #include "passport_fonts.h"
 #include "passport_pet.h"
 #include "passport_power.h"
@@ -45,6 +46,8 @@ static const char *TAG = "passport_app";
 #define APP_ACCENT  0x4D6BFE
 #define APP_PAPER   0xEAF0FF
 #define APP_MUTED   0x8FA3C8
+// An unlit signal bar: visible enough to show how many there are, dark enough not to read as signal.
+#define WIFI_BAR_OFF 0x24314F
 
 #define BATTERY_POLL_MS 5000
 #define REACT_MS        1400
@@ -73,6 +76,22 @@ static const char *const MOOD_LINES[PASSPORT_PET_MOOD_COUNT] = {
 
 static lv_obj_t *s_screen;
 static lv_obj_t *s_battery;
+static lv_obj_t *s_wifi;
+static lv_obj_t *s_wifi_bars[3];
+
+// The hint line has two states, and the confirmation is the reason: it has to be obvious that the
+// buttons mean something different while it is showing.
+#define HINT_DEFAULT "按住OK说话   长按DOWN工作\n长按UP配网   双击UP待机"
+#define HINT_CONFIRM "OK: 重新配网    DOWN: 取消"
+
+// Set by the button task, acted on by the worker: a long press of UP when this device is already on a
+// network asks first. Re-provisioning is not destructive by itself, but it does raise a hotspot and put
+// a join code on the screen, and someone who is already online usually pressed the button by accident.
+static bool s_confirming;
+static int64_t s_confirm_deadline_us;
+#define CONFIRM_WINDOW_US (12LL * 1000 * 1000)
+// Used by show_home(), which is defined above the question it interrupts.
+static void end_confirmation(bool confirmed);
 static lv_obj_t *s_bubble;
 static lv_obj_t *s_mood;
 static lv_obj_t *s_hint;
@@ -148,10 +167,28 @@ static void build_home(void)
 
     // Status strip. The battery sits top-right, per the repository convention,
     // and shows a placeholder rather than a number when the gauge is absent.
-    lv_obj_t *title = label(s_screen, 10, 6, &lv_font_montserrat_14, APP_MUTED, "title");
+    lv_obj_t *title = label(s_screen, 8, 6, &lv_font_montserrat_14, APP_MUTED, "title");
     lv_label_set_text(title, "PASSPORT");
-    s_battery = label(s_screen, 150, 6, &lv_font_montserrat_14, APP_PAPER, "battery");
-    lv_obj_set_width(s_battery, 80);
+
+    // The top-right corner answers the two questions a glance at a pocket device should answer: is it
+    // on the network, and how much battery is left.
+    //
+    // The Wi-Fi part is a word and three bars rather than a word alone, because "connected" and
+    // "connected but barely" are different situations: the bars are lit from the associated signal,
+    // and none are lit when there is no association at all.
+    s_wifi = label(s_screen, 140, 6, &lv_font_montserrat_14, APP_MUTED, "wifi");
+    lv_obj_set_width(s_wifi, 34);
+    lv_label_set_text(s_wifi, "--");
+    for (int i = 0; i < 3; i++) {
+        static const int heights[3] = { 5, 8, 11 };
+        char name[16];
+        snprintf(name, sizeof(name), "wifi_bar%d", i);
+        s_wifi_bars[i] = plain(s_screen, 178 + 5 * i, 19 - heights[i], 3, heights[i], WIFI_BAR_OFF);
+        lv_obj_set_name(s_wifi_bars[i], name);
+    }
+
+    s_battery = label(s_screen, 196, 6, &lv_font_montserrat_14, APP_PAPER, "battery");
+    lv_obj_set_width(s_battery, 36);
     lv_obj_set_style_text_align(s_battery, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_text(s_battery, "--");
     plain(s_screen, 0, 26, 240, 2, APP_ACCENT);
@@ -183,7 +220,7 @@ static void build_home(void)
     s_hint = label(s_screen, 6, 240, passport_font_body(), APP_MUTED, "hint");
     lv_obj_set_width(s_hint, 228);
     lv_label_set_long_mode(s_hint, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(s_hint, "按住OK说话   长按DOWN工作\n长按UP配网   双击UP待机");
+    lv_label_set_text(s_hint, HINT_DEFAULT);
 
     set_mood(PASSPORT_PET_IDLE, 0);
     lv_screen_load(s_screen);
@@ -442,6 +479,12 @@ void passport_app_show_home(void)
     s_on_work = false;
     bsp_lvgl_unlock();
 
+    // Coming home from the setup screen leaves the interface in its normal state, including a
+    // confirmation that was interrupted by it.
+    if (s_confirming) {
+        end_confirmation(false);
+    }
+
     // Leaving the setup screen releases the join code's pixels: see qr_release() for why they are
     // not held for the life of the device.
     qr_release();
@@ -627,6 +670,36 @@ static void battery_refresh(void)
     bsp_lvgl_unlock();
 }
 
+// The top-right corner's other half: whether this device is on a network, and how well.
+static void wifi_refresh(void)
+{
+    if (!bsp_lvgl_lock(200)) {
+        return;
+    }
+    const passport_wifi_state_t state = passport_wifi_state();
+    const int rssi = passport_wifi_rssi();
+    const bool online = (state == PASSPORT_WIFI_CONNECTED);
+
+    if (s_wifi != NULL) {
+        lv_label_set_text(s_wifi, online ? "WiFi" : (state == PASSPORT_WIFI_CONNECTING) ? "..." : "--");
+        lv_obj_set_style_text_color(s_wifi, lv_color_hex(online ? APP_ACCENT : APP_MUTED), 0);
+    }
+
+    // Three bars are enough to tell "next to the router" from "the far end of the flat", which is what
+    // this is for. The thresholds are the usual ones for consumer Wi-Fi.
+    int lit = 0;
+    if (online) {
+        lit = (rssi >= -67) ? 3 : (rssi >= -80) ? 2 : 1;
+    }
+    for (int i = 0; i < 3; i++) {
+        if (s_wifi_bars[i] == NULL) {
+            continue;
+        }
+        lv_obj_set_style_bg_color(s_wifi_bars[i], lv_color_hex(i < lit ? APP_ACCENT : WIFI_BAR_OFF), 0);
+    }
+    bsp_lvgl_unlock();
+}
+
 static void app_task(void *arg)
 {
     (void)arg;
@@ -652,6 +725,16 @@ static void app_task(void *arg)
         // turning the screen off needs no task of its own.
         for (int waited = 0; s_running && waited < BATTERY_POLL_MS; waited += 100) {
             passport_power_tick();
+            // The network indicator is refreshed about once a second: association and signal change on
+            // their own schedule, not on the battery's, and the corner would otherwise show a stale
+            // "connecting" for up to five seconds after the link came up.
+            if (waited % 1000 == 0) {
+                wifi_refresh();
+            }
+            // A confirmation that is never answered must not leave the interface in a strange state.
+            if (s_confirming && esp_timer_get_time() > s_confirm_deadline_us) {
+                end_confirmation(false);
+            }
             // Requests from the button task that are too heavy for it: building the setup screen
             // means encoding the join code. See the long-press-of-UP branch in passport_app_key().
             if (s_setup_requested) {
@@ -727,6 +810,56 @@ esp_err_t passport_app_start(void)
     return ESP_OK;
 }
 
+// --- the re-provisioning question -------------------------------------------
+//
+// Three small pieces, because they are used from two tasks: the hint line's two states, asking the
+// question, and answering it. Each takes the interface lock itself.
+
+static void set_hint_text(const char *text)
+{
+    if (s_hint != NULL) {
+        lv_label_set_text(s_hint, text);
+    }
+}
+
+static void begin_confirmation(void)
+{
+    if (!bsp_lvgl_lock(500)) {
+        return;
+    }
+    s_confirming = true;
+    s_confirm_deadline_us = esp_timer_get_time() + CONFIRM_WINDOW_US;
+    // Order matters here too: set_mood() writes that mood's stock line into the bubble.
+    set_mood(PASSPORT_PET_CURIOUS, 0);
+    char line[BUBBLE_MAX];
+    // The network name is bounded here: a bubble is two lines, the full name is on the setup screen, and
+    // an unbounded %s could overflow a buffer this size.
+    snprintf(line, sizeof(line), "已连接 %.24s。要重新配网吗?",
+             passport_config_current()->wifi_ssid);
+    set_bubble(line);
+    set_hint_text(HINT_CONFIRM);
+    bsp_lvgl_unlock();
+    ESP_LOGI(TAG, "已联网,询问是否重新配网");
+}
+
+static void end_confirmation(bool confirmed)
+{
+    if (!bsp_lvgl_lock(500)) {
+        return;
+    }
+    s_confirming = false;
+    set_hint_text(HINT_DEFAULT);
+    if (confirmed) {
+        // The worker builds it: it owns the encoder, and this may be the button task.
+        s_setup_requested = true;
+        set_bubble("好,打开配网屏…");
+    } else {
+        set_mood(PASSPORT_PET_IDLE, 0);
+    }
+    bsp_lvgl_unlock();
+    ESP_LOGI(TAG, "重新配网:%s", confirmed ? "已确认" : "已取消");
+}
+
 void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
 {
     if (!bsp_lvgl_lock(300)) {
@@ -738,6 +871,20 @@ void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
     // to arbitrate between "wake up" and "act".
     if (passport_power_activity()) {
         bsp_lvgl_unlock();
+        return;
+    }
+
+    // While the device is asking whether to re-provision, the buttons mean only yes and no. This sits
+    // above everything else, including push-to-talk, because otherwise a press of OK would start a
+    // recording instead of answering the question.
+    if (s_confirming) {
+        bsp_lvgl_unlock();
+        if (btn == BSP_BTN_OK) {
+            end_confirmation(true);
+        } else if (btn == BSP_BTN_DOWN || btn == BSP_BTN_UP ||
+                   (btn == BSP_BTN_OK && ev == BSP_BTN_RELEASE)) {
+            end_confirmation(false);
+        }
         return;
     }
 
@@ -793,13 +940,18 @@ void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
     if (btn == BSP_BTN_UP && ev == BSP_BTN_LONG) {
         // Reach the setup screen by hand, for a device whose network changed under it.
         //
-        // Only the request is made here. Building that screen encodes the join code, which needs
-        // about six kilobytes of stack, and the button task has less than that — asking it to build
-        // the screen crashed the device with a stack protection fault, every time, on a long press
-        // of UP. The worker owns the encoder for exactly this reason, so the request is handed to it
-        // and the screen appears within a poll interval.
+        // On a device that is already on a network this asks first. Re-provisioning is not destructive,
+        // but it raises a hotspot and puts a join code on the screen, and the likeliest reason to press
+        // this on a working device is a mistake: the answer to "did you mean to?" should not be a
+        // screen full of credentials. Only the request is made here — building that screen encodes the
+        // join code, which needs about six kilobytes, and the button task has less than that.
         bsp_lvgl_unlock();
-        s_setup_requested = true;
+        if (passport_wifi_state() == PASSPORT_WIFI_CONNECTED &&
+            passport_config_current()->wifi_ssid[0] != '\0') {
+            begin_confirmation();
+        } else {
+            s_setup_requested = true;
+        }
         return;
     }
 
@@ -907,8 +1059,7 @@ void passport_app_show_error(const char *reason)
     bsp_lvgl_unlock();
 }
 
-void passport_app_show_status(const char *text, passport_pet_mood_t mood)
-{
+void passport_app_show_status(const char *text, passport_pet_mood_t mood){
     if (!bsp_lvgl_lock(500)) {
         return;
     }

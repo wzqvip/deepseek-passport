@@ -19,6 +19,60 @@ Rules for this log:
 
 ---
 
+## 2026-10-15 — Session 36: the corner shows the network, and re-provisioning asks first
+
+Two changes the owner asked for, both about answering a question before it is asked.
+
+### The top-right corner: Wi-Fi and battery
+
+The corner now answers the two questions a glance at a pocket device should answer. `wifi` is a word and
+`wifi_bar0` to `wifi_bar2` are three bars lit from the associated signal — three above −67 dBm, two above
+−80, one below that, none when there is no association at all — next to `battery`, which was already there.
+`passport_wifi_rssi()` was added for it and reads the driver on demand, because a stale signal figure in the
+corner is worse than none.
+
+The bars are objects rather than a glyph because this interface has no icon font: three rectangles whose
+colour changes are cheaper than a font, and they are named so the console can see them like everything else.
+
+Verified on the device by taking the link away and giving it back:
+
+```text
+wifi disconnect -> ui get wifi  text: --        battery 98%
+wifi connect    -> ui get wifi  text: WiFi      battery 98%
+```
+
+The indicator refreshes about once a second, on its own cadence: association and signal do not change on
+the battery's five-second schedule, and a corner that says "connecting" for five seconds after the link
+came up is a corner that lies.
+
+### Re-provisioning asks first
+
+A long press of UP used to open the setup screen unconditionally. On a device that is already on a
+network that is almost certainly a mistake — it raises a hotspot and puts a join code on the screen — so
+now it asks:
+
+```text
+ui key up long -> hint  "OK: 重新配网    DOWN: 取消"
+                  bubble "已连接 murez_2.4GHz。要重新配网吗?"
+ui key ok click -> screen setup        (confirmed)
+ui key down click -> the normal hint, still on the home screen   (cancelled)
+13 seconds of silence -> the normal hint, still on the home screen  (expired)
+```
+
+A device with no network configured skips the question, because for it the setup screen is the only way
+forward and a confirmation would be noise. The question also sits above push-to-talk in the button
+handling, so a press of OK answers it rather than starting a recording, and it expires after twelve
+seconds so an unanswered question cannot leave the interface in a state that is neither normal nor setup.
+
+### The console tool
+
+`tools/passport-console.ps1` gained a `sleep <ms>` script directive, because a confirmation that expires
+is behaviour that cannot be checked by a test that cannot wait. It also now decodes the port as UTF-8:
+its first version appended one `char` per byte and turned every Chinese log line into mojibake, which is a
+poor quality for the tool whose job is reading what the device says.
+
+---
+
 ## 2026-10-15 — Session 35: the hotspot was being knocked down by the station, and provisioning now works over the LAN
 
 **The owner's report:** still cannot connect. And a request worth acting on: *write the firmware you need and

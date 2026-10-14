@@ -260,6 +260,16 @@ int passport_wifi_scan(passport_wifi_ap_t *out, int max, uint32_t timeout_ms)
     return written;
 }
 
+int passport_wifi_rssi(void)
+{
+    wifi_ap_record_t ap_info;
+    memset(&ap_info, 0, sizeof(ap_info));
+    if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
+        return -128;
+    }
+    return (int)ap_info.rssi;
+}
+
 esp_err_t passport_wifi_connect(uint32_t timeout_ms)
 {
     const passport_config_t *cfg = passport_config_current();
