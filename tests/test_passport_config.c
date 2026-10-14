@@ -31,12 +31,25 @@ int main(void)
     assert(cfg.llm_api_key[0] == '\0');
     assert(cfg.tts_api_key[0] == '\0');
     assert(cfg.bridge_token[0] == '\0');
+    // Wi-Fi credentials are empty by default and the password is a secret, so the
+    // console can never render it back.
+    assert(cfg.wifi_ssid[0] == '\0');
+    assert(cfg.wifi_password[0] == '\0');
+    const passport_cfg_field_t *f_wifi_pass = passport_cfg_find("wifi_password");
+    const passport_cfg_field_t *f_wifi_ssid = passport_cfg_find("wifi_ssid");
+    assert(f_wifi_pass != NULL && f_wifi_pass->secret);
+    assert(f_wifi_ssid != NULL && !f_wifi_ssid->secret);
+    assert(passport_cfg_apply(&cfg, f_wifi_pass, "correct-horse") == PASSPORT_CFG_OK);
+    assert(strcmp(cfg.wifi_password, "correct-horse") == 0);
+    assert(passport_cfg_format(&cfg, f_wifi_pass, out, sizeof(out)) > 0);
+    assert(strcmp(out, "(set)") == 0);
+    assert(strstr(out, "horse") == NULL);
 
     // Defaults are idempotent.
     passport_cfg_defaults(NULL);   // must not crash
 
     // --- field table --------------------------------------------------------
-    assert(passport_cfg_field_count() == 17);
+    assert(passport_cfg_field_count() == 19);
     assert(passport_cfg_field(-1) == NULL);
     assert(passport_cfg_field(passport_cfg_field_count()) == NULL);
     assert(passport_cfg_find(NULL) == NULL);

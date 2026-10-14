@@ -17,6 +17,51 @@
 
 ---
 
+## 2026-10-14 —— 第 7 次会话：Wi-Fi station，以及编译器抓出的截断 bug
+
+**里程碑：** 网络层。设备现在能用配置里的凭据找到并加入网络。
+
+### 已构建的内容
+
+新增两个配置字段 `wifi_ssid` 与 `wifi_password`（密码标记为 secret）。由于结构布局变了，
+schema 版本升到 2——这也让版本守卫得到了一次真实演练（见下）。
+
+`passport_wifi` 负责把 station 拉起来：netif、默认事件循环、station 接口、事件处理，
+然后扫描与连接。凭据只来自配置存储，绝不来自源码。两个操作都是阻塞的，因此属于任务上下文，
+不能放在按键回调或 LVGL 定时器里。
+
+控制台命令：`wifi status`、`wifi scan`、`wifi connect [ms]`、`wifi disconnect`。
+
+### 编译器抓出了一个真 bug
+
+把 SSID 与密码写进 Wi-Fi 协议栈字段时用 `snprintf`，触发了
+`-Werror=format-truncation`：配置允许 95 字符，而协议栈只允许 SSID 31、密码 63。
+静默的后果会是**关联到另一个网络**，或者把密码截断后报"密码错误"——而那其实是固件 bug。
+现在连接路径会检查两个长度，并按实际上限明确拒绝，不再截断。
+
+### 我自己的一处报告 bug，靠读输出发现
+
+版本不匹配之后控制台打印了 `stored=yes`，这是不实的：当时生效的是默认值，而存储里是旧版本
+的 blob。现在 dirty 标志的含义与措辞一致——**"生效配置与已存配置不同"**——并且在"没找到
+已存配置""版本或大小不符""NVS 打不开"三种情况下都会被置位。已通过观察
+`stored=no (unsaved changes)` 在 `config save` 之后变成 `stored=yes` 得到验证。
+
+### 真机验证
+
+```text
+config list   版本升级后:v1 blob(1260 B)与 v2 结构(1452 B)不符被拒绝,装入默认值,
+              报告 stored=no;config save 之后报告 stored=yes
+wifi status   idle、address (none)、ssid (not configured)、password (empty)
+wifi scan     17 个接入点,RSSI 从 -30 到 -85 dBm,信道 1 到 11
+wifi connect  未配置 SSID:立即拒绝,并给出要执行的三个命令
+wifi connect  不存在的 SSID:经断开事件返回 ESP_FAIL,状态变为 failed
+```
+
+扫描结果**刻意不在此复现**：它包含周边邻居的网络名称，那不是本项目应当记录的数据。设备自身
+的 MAC 地址出于同样原因也不记录。
+
+---
+
 ## 2026-10-14 —— 第 6 次会话：配置存储
 
 **里程碑：** 语音、工作模式、Web 后台三个里程碑都依赖的设置与凭据层。

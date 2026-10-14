@@ -19,6 +19,63 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 7: the Wi-Fi station, and a truncation bug the compiler caught
+
+**Milestone:** the network layer. The device can find and join a network using
+credentials from the configuration.
+
+### What was built
+
+Two configuration fields, `wifi_ssid` and `wifi_password` (the password marked
+secret). The schema version moved to 2 because the struct layout changed, which gave
+the version guard a real workout (below).
+
+`passport_wifi` brings up the station — netif, default event loop, station
+interface, event handlers — then scans and connects. Credentials come from the
+configuration store and never from source. Both operations block, so they belong in a
+task, not in a button callback or the LVGL timer.
+
+Console commands: `wifi status`, `wifi scan`, `wifi connect [ms]`,
+`wifi disconnect`.
+
+### The compiler caught a real bug
+
+Writing the SSID and password into the Wi-Fi stack's fields with `snprintf` produced
+a `-Werror=format-truncation` diagnostic: the configuration allows a 95-character
+string, the stack allows 31 for an SSID and 63 for a password. The silent
+consequence would have been **associating with a different network**, or truncating a
+password and reporting a wrong-password failure that is really a firmware bug. The
+connect path now checks both lengths and refuses with the exact limit instead of
+truncating.
+
+### A reporting bug of my own, found by reading the output
+
+After the version mismatch the console printed `stored=yes`, which was untrue: the
+live configuration was the defaults while the stored blob was the old version. The
+dirty flag now means what the wording claims — *the live configuration is not what is
+stored* — and it is set when nothing was found, when the version or size did not
+match, and when NVS could not be opened. Verified by watching `stored=no (unsaved
+changes)` turn into `stored=yes` across a `config save`.
+
+### Verified on the device
+
+```text
+config list   after the version bump: the v1 blob (1260 B) is refused against the
+              v2 struct (1452 B), the defaults are installed, reported as stored=no;
+              config save then reports stored=yes
+wifi status   idle, address (none), ssid (not configured), password (empty)
+wifi scan     17 access points, RSSI from -30 to -85 dBm, channels 1 to 11
+wifi connect  without an SSID: refused immediately, with the three commands to run
+wifi connect  with a non-existent SSID: ESP_FAIL through the disconnect event,
+              state becomes failed
+```
+
+The scan list is deliberately not reproduced here: it contains the surrounding
+neighbourhood's network names, which are not this project's data to record. The
+device's own MAC address is left out for the same reason.
+
+---
+
 ## 2026-10-14 — Session 6: the configuration store
 
 **Milestone:** the settings and credential layer that the voice, work-mode, and web

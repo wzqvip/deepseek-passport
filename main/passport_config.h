@@ -11,7 +11,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define PASSPORT_CFG_VERSION 1u
+// Bump this whenever the struct layout changes. A stored blob of a different size
+// or version is discarded in favour of the defaults, which is safer than
+// reinterpreting old bytes as new fields.
+#define PASSPORT_CFG_VERSION 2u
 #define PASSPORT_CFG_STR_MAX 96
 
 typedef struct {
@@ -32,6 +35,10 @@ typedef struct {
     char tts_api_key[PASSPORT_CFG_STR_MAX];
     char tts_model[PASSPORT_CFG_STR_MAX];
     char tts_voice[PASSPORT_CFG_STR_MAX];
+
+    // Wi-Fi station.
+    char wifi_ssid[PASSPORT_CFG_STR_MAX];
+    char wifi_password[PASSPORT_CFG_STR_MAX];
 
     // Companion bridge for work mode.
     char bridge_url[PASSPORT_CFG_STR_MAX];

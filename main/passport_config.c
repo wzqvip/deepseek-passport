@@ -32,6 +32,9 @@ static const passport_cfg_field_t FIELDS[] = {
     STR_FIELD("tts_model", tts_model, false),
     STR_FIELD("tts_voice", tts_voice, false),
 
+    STR_FIELD("wifi_ssid", wifi_ssid, false),
+    STR_FIELD("wifi_password", wifi_password, true),
+
     STR_FIELD("bridge_url", bridge_url, false),
     STR_FIELD("bridge_token", bridge_token, true),
 

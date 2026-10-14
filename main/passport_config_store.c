@@ -33,9 +33,9 @@ esp_err_t passport_config_store_init(bool *loaded)
     nvs_handle_t handle;
     esp_err_t err = open_nvs(&handle);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "NVS 打开失败: %s;使用默认配置(不会写入)", esp_err_to_name(err));
+        ESP_LOGE(TAG, "NVS 打开失败: %s;使用默认配置(无法保存)", esp_err_to_name(err));
         s_ready = false;
-        s_dirty = false;
+        s_dirty = true;   // the live configuration is not persisted
         return err;
     }
 
@@ -45,26 +45,29 @@ esp_err_t passport_config_store_init(bool *loaded)
     nvs_close(handle);
 
     if (err == ESP_ERR_NVS_NOT_FOUND) {
-        // First boot, or the configuration was cleared. Not an error.
+        // First boot, or the configuration was cleared. The live defaults are not
+        // what is stored — nothing is — so the instance is dirty until saved.
         ESP_LOGI(TAG, "未找到已保存的配置;使用默认配置");
         s_ready = true;
-        s_dirty = false;
+        s_dirty = true;
         return ESP_OK;
     }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "读取配置失败: %s;使用默认配置", esp_err_to_name(err));
         s_ready = true;
-        s_dirty = false;
+        s_dirty = true;
         return err;
     }
     if (size != sizeof(stored) || stored.version != PASSPORT_CFG_VERSION) {
         // A shorter blob or a different version means the layout changed. Keeping
-        // the defaults is safer than reinterpreting old bytes as new fields.
-        ESP_LOGW(TAG, "已保存配置与当前版本不符(大小 %u/%u,版本 %u/%u);使用默认配置",
+        // the defaults is safer than reinterpreting old bytes as new fields, and
+        // the instance is dirty because the live configuration is not the stored
+        // one — reporting "stored" here would be untrue.
+        ESP_LOGW(TAG, "已保存配置与当前版本不符(大小 %u/%u,版本 %u/%u);改用默认配置,需要保存",
                  (unsigned)size, (unsigned)sizeof(stored),
                  (unsigned)stored.version, (unsigned)PASSPORT_CFG_VERSION);
         s_ready = true;
-        s_dirty = false;
+        s_dirty = true;
         return ESP_ERR_INVALID_VERSION;
     }
 

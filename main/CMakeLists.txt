@@ -7,6 +7,7 @@ idf_component_register(
          "passport_cli.c"
          "passport_config.c"
          "passport_config_store.c"
+         "passport_wifi.c"
          "passport_metrics_math.c"
          "assets/passport_pet_assets.c"
          # Kept for the repository's host gate, which compiles these two sources

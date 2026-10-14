@@ -29,9 +29,11 @@
 #include "passport_audio.h"
 #include "passport_config.h"
 #include "passport_config_store.h"
+#include "passport_wifi.h"
 
 #define CLI_NAME_MAX 96
 #define CLI_TAP_ANCESTOR_MAX 6
+#define SCAN_LIST_MAX 20
 
 static passport_cli_key_sink_t s_key_sink;
 static bool s_started;
@@ -511,6 +513,77 @@ static int cmd_audio(int argc, char **argv)
     return 1;
 }
 
+static int cmd_wifi(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("usage: wifi <status|scan|connect [ms]|disconnect>\n");
+        printf("  status           station state, address, and the configured SSID\n");
+        printf("  scan             list nearby access points (no credentials needed)\n");
+        printf("  connect [ms]     associate using the stored credentials (default 15000 ms)\n");
+        printf("  disconnect       drop the association; stored credentials are kept\n");
+        return 1;
+    }
+
+    const char *sub = argv[1];
+    char ip[24];
+
+    if (strcmp(sub, "status") == 0) {
+        passport_wifi_ip(ip, sizeof(ip));
+        const passport_config_t *cfg = passport_config_current();
+        printf("state    : %s\n", passport_wifi_state_name(passport_wifi_state()));
+        printf("address  : %s\n", (ip[0] != '\0') ? ip : "(none)");
+        printf("ssid     : %s\n", (cfg->wifi_ssid[0] != '\0') ? cfg->wifi_ssid : "(not configured)");
+        printf("password : %s\n", (cfg->wifi_password[0] != '\0') ? "(set)" : "(empty)");
+        return 0;
+    }
+
+    if (strcmp(sub, "scan") == 0) {
+        passport_wifi_ap_t aps[SCAN_LIST_MAX];
+        const int found = passport_wifi_scan(aps, SCAN_LIST_MAX, 15000u);
+        if (found < 0) {
+            printf("wifi scan: failed\n");
+            return 1;
+        }
+        printf("wifi scan: %d access point(s)\n", found);
+        for (int i = 0; i < found; i++) {
+            printf("  %-32s rssi=%4d ch=%2u %s\n", aps[i].ssid, aps[i].rssi,
+                   (unsigned)aps[i].channel, aps[i].secure ? "secured" : "open");
+        }
+        return 0;
+    }
+
+    if (strcmp(sub, "connect") == 0) {
+        uint32_t timeout = 15000u;
+        if (argc > 2) {
+            const int ms = atoi(argv[2]);
+            if (ms > 0) {
+                timeout = (uint32_t)ms;
+            }
+        }
+        const esp_err_t err = passport_wifi_connect(timeout);
+        if (err == ESP_ERR_INVALID_STATE) {
+            printf("wifi connect: no SSID configured. Set one first:\n");
+            printf("  config set wifi_ssid <name>\n");
+            printf("  config set wifi_password <password>\n");
+            printf("  config save\n");
+            return 1;
+        }
+        passport_wifi_ip(ip, sizeof(ip));
+        printf("wifi connect: %s%s%s\n", esp_err_to_name(err),
+               (ip[0] != '\0') ? "  address " : "", ip);
+        return (err == ESP_OK) ? 0 : 1;
+    }
+
+    if (strcmp(sub, "disconnect") == 0) {
+        const esp_err_t err = passport_wifi_disconnect();
+        printf("wifi disconnect: %s\n", esp_err_to_name(err));
+        return (err == ESP_OK) ? 0 : 1;
+    }
+
+    printf("wifi: unknown subcommand \"%s\"\n", sub);
+    return 1;
+}
+
 static int cmd_config(int argc, char **argv)
 {
     if (argc < 2) {
@@ -667,6 +740,7 @@ esp_err_t passport_cli_start(void)
     register_command("ver", "Print the application and ESP-IDF build identity", &cmd_ver);
     register_command("app", "Print uptime, battery, keypad voltage, and memory", &cmd_app);
     register_command("mem", "Print heap, largest free block, and the LVGL pool", &cmd_mem);
+    register_command("wifi", "Wi-Fi station: status | scan | connect [ms] | disconnect", &cmd_wifi);
     register_command("config", "Configuration: list | get | set | save | reset", &cmd_config);
     register_command("audio", "Audio path: status | tone [ms] | loopback [ms] | mute-check", &cmd_audio);
     register_command("ui", "Screen inspection: tree | names | get | tap | key | screen", &cmd_ui);
