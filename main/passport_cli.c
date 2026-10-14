@@ -16,6 +16,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include "bsp_battery.h"
 #include "bsp_button.h"
@@ -1651,6 +1656,79 @@ static int cmd_prov(int argc, char **argv)
                mine);
         printf("  Wi-Fi reason code there, and no attempt at all means the beacon never arrived\n");
         return on_air ? 0 : 1;
+    }
+
+    if (strcmp(sub, "fetch") == 0) {
+        // Ask this device's own web console for a page, over its own network stack.
+        //
+        // The question "is the setup page being served?" had no answer that did not depend on another
+        // machine being on the same network. This asks the device directly, so a failure is the
+        // device's and a success means any client that can reach this address will get the page.
+        const char *path = (argc > 2) ? argv[2] : "/";
+        passport_net_init();
+
+        // The access point's own address first: that interface is up whenever the portal is, and a
+        // connection to it never leaves the device.
+        static const char *const HOSTS[] = { "192.168.4.1", "127.0.0.1" };
+        int sock = -1;
+        for (size_t i = 0u; i < sizeof(HOSTS) / sizeof(HOSTS[0]) && sock < 0; i++) {
+            struct sockaddr_in dest;
+            memset(&dest, 0, sizeof(dest));
+            dest.sin_family = AF_INET;
+            dest.sin_port = htons(80);
+            dest.sin_addr.s_addr = inet_addr(HOSTS[i]);
+            const int candidate = socket(AF_INET, SOCK_STREAM, 0);
+            if (candidate < 0) {
+                printf("prov fetch: socket failed (%d)\n", errno);
+                return 1;
+            }
+            struct timeval tv = { .tv_sec = 4, .tv_usec = 0 };
+            setsockopt(candidate, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+            if (connect(candidate, (struct sockaddr *)&dest, sizeof(dest)) == 0) {
+                sock = candidate;
+                printf("prov fetch: connected to %s:80\n", HOSTS[i]);
+            } else {
+                close(candidate);
+            }
+        }
+        if (sock < 0) {
+            printf("prov fetch: could not connect to the console on port 80\n");
+            printf("  (the portal is %s; run \"prov start\" and check \"prov events\")\n",
+                   passport_provision_active() ? "up" : "down");
+            return 1;
+        }
+
+        char request[160];
+        snprintf(request, sizeof(request), "GET %s HTTP/1.0\r\nHost: 192.168.4.1\r\n\r\n", path);
+        if (send(sock, request, strlen(request), 0) < 0) {
+            printf("prov fetch: send failed (%d)\n", errno);
+            close(sock);
+            return 1;
+        }
+        static char reply[512];
+        const int got = recv(sock, reply, sizeof(reply) - 1, 0);
+        close(sock);
+        if (got <= 0) {
+            printf("prov fetch: no reply (%d); the page is not being served\n", got);
+            return 1;
+        }
+        reply[got] = '\0';
+        char status[64] = "?";
+        const char *end = strstr(reply, "\r\n");
+        if (end != NULL) {
+            const size_t n = (size_t)(end - reply);
+            memcpy(status, reply, (n < sizeof(status) - 1u) ? n : sizeof(status) - 1u);
+            status[(n < sizeof(status) - 1u) ? n : sizeof(status) - 1u] = '\0';
+        }
+        const char *body = strstr(reply, "\r\n\r\n");
+        printf("prov fetch %s -> %s\n", path, status);
+        printf("  %d bytes in the first read, body begins %s\n", got,
+               (body != NULL) ? "after the headers" : "(none found in this read)");
+        if (body != NULL && body[4] != '\0') {
+            const size_t shown = strlen(body + 4);
+            printf("  body starts: %.60s%s\n", body + 4, (shown > 60u) ? "..." : "");
+        }
+        return 0;
     }
 
     if (strcmp(sub, "form") == 0) {

@@ -623,14 +623,27 @@ bool passport_app_work_feed(const char *json)
     if (!bsp_lvgl_lock(1000)) {
         return false;
     }
+
+    // Does this document say anything the owner has not already been shown? The screen is taken over
+    // only when it does.
+    //
+    // The first version took it over on every document, which meant a bridge reporting the same task
+    // every five seconds dragged the interface back to the work screen for ever: pressing OK to go home
+    // lasted until the next poll. A status that has not changed is not news, and the screen is
+    // refreshed below either way, so looking at it always shows the latest.
+    const bool changed = (strcmp(parsed.task, s_work_view.task) != 0) ||
+                         (parsed.state != s_work_view.state) ||
+                         (strcmp(parsed.question, s_work_view.question) != 0) ||
+                         (parsed.option_count != s_work_view.option_count);
+
     s_work_view = parsed;
     if (s_work == NULL) {
         build_work();
     }
-    // A document that arrives while the home screen is showing takes it over, the way a
-    // notification would. It does not interrupt the setup screen: someone mid-provisioning
-    // should not be thrown out of it by a background update.
-    if (!s_on_setup) {
+    // A document that arrives while the home screen is showing takes it over, the way a notification
+    // would. It does not interrupt the setup screen: someone mid-provisioning should not be thrown out
+    // of it by a background update.
+    if (!s_on_setup && changed) {
         lv_screen_load(s_work);
         s_on_work = true;
     }

@@ -19,6 +19,56 @@ Rules for this log:
 
 ---
 
+## 2026-10-15 — Session 38: the work screen stopped dragging the owner back, and the page can be checked from the device
+
+Two reports from the owner. One was my mess; the other was a real bug, and the first report turned out to
+be my mess as well.
+
+### "Why does it keep saying index repo?"
+
+Because I had left a stand-in bridge running on this machine and pointed the device at it: its canned
+status document says `indexing repository`, 42%, for ever, and the device polled it every five seconds.
+Stopped, and the device's `bridge_url` cleared.
+
+But the report was worth more than the cleanup. **The work screen took over on every document, not only
+on a changed one**, so leaving it did not stick: pressing OK to go home lasted until the next poll, five
+seconds later, for ever. A bridge that reports the same task all afternoon would have made the device
+unusable as anything else, which is exactly what the owner saw. It now takes the screen over only when the
+document says something new — the task, the state, the question or the number of options — while still
+refreshing what is on the screen, so looking at it always shows the latest.
+
+Verified on the device: a first document takes the screen over, going home stays home through a repeat of
+the same document, and a different document takes it over again.
+
+### The page can now be checked from the device
+
+`prov start` was reporting the access point up, but "is the page actually being served?" still needed
+another machine on the same network to answer. It does not any more:
+
+```text
+prov fetch /            -> HTTP/1.1 200 OK, body begins with the page's doctype
+prov fetch /api/status  -> HTTP/1.1 200 OK
+```
+
+`prov fetch` opens a socket to the device's own console — the access point's address first, loopback
+second — sends a GET and prints the status line and the beginning of the body. A failure is now the
+device's own, and a success means any client that can reach that address will get the page. This is the
+kind of self-test the owner asked for two sessions ago, applied to the one question that was still
+dependant on someone else's network.
+
+### What the owner's browser still needs to know
+
+The page exists **while the setup portal is running**, and on a device that is already configured the
+portal starts when provisioning mode is entered — which the information screen on a long press of UP now
+says. An always-on console was considered and rejected on measured grounds: with the HTTP server up there
+is not enough contiguous memory left for the TLS session the voice path needs, and that trade was recorded
+when the conflict was first measured.
+
+The second thing is the browser rather than the device: this serves plain HTTP on port 80, and browsers
+increasingly try `https://` first, so the address has to be typed with `http://` in front of it.
+
+---
+
 ## 2026-10-15 — Session 37: the page was never being served, and the corner now says so
 
 The owner asked two things: what address the device is on, and for a long press of UP on a connected
@@ -32,8 +82,8 @@ Answering the first found the third real cause of "I cannot connect".
 The portal's HTTP server was failing to start, and nothing said so anywhere the owner could see:
 
 ```text
-配网启动:5/6 HTTP 服务 (ESP_ERR_HTTPD_TASK)
-E passport_prov: HTTP 服务启动失败: ESP_ERR_HTTPD_TASK
+the portal's start trace, step 5 of 6, the HTTP server: ESP_ERR_HTTPD_TASK
+and the error line beside it: the HTTP server failed to start
 ```
 
 `ESP_ERR_HTTPD_TASK` means the server's task could not be created — no contiguous memory for its stack.
@@ -55,8 +105,8 @@ A trace was added through the start sequence, which is how this was found in one
 guesswork:
 
 ```text
-配网启动:1/6 开始 ... 4/6 热点配置已下发 (ESP_OK)
-配网启动:5/6 HTTP 服务 (ESP_ERR_HTTPD_TASK)
+portal start: steps 1 to 4, ending with the hotspot configuration accepted (ESP_OK)
+portal start: step 5, the HTTP server: ESP_ERR_HTTPD_TASK
 ```
 
 `prov status` now reports `access point: up` and `wifi status` reports the page address with whether it is
@@ -66,10 +116,8 @@ problems and the device should say which one it is in.
 ### The long press now shows the information
 
 ```text
-bubble:  网络 murez_2.4GHz
-         地址 192.168.3.75
-         网页 http://192.168.3.75/
-hint:    OK: 进入配网模式   DOWN: 取消
+bubble:  the network name, then its address, then the web address, on three lines
+hint:    OK enters provisioning mode, DOWN cancels
 ```
 
 Someone who long-presses this button on a working device is usually after the address, not after a
