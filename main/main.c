@@ -14,6 +14,7 @@
 #include "demo_navigation.h"
 #include "key_guard.h"
 #include "passport_cli.h"
+#include "passport_pet_assets.h"
 #include "ui_pixel.h"
 #include "lvgl.h"
 #include "esp_log.h"
@@ -317,4 +318,14 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "就绪:Display=%d Button=%d Audio=%d Battery=%d",
              s_ok[0], s_ok[1], s_ok[2], s_ok[3]);
+
+    // Forced reference: the pet sprites live in flash and are drawn by LVGL, so
+    // nothing links them until a screen uses one. Touching the descriptor and its
+    // pixel map here keeps the asset object in the image (--gc-sections drops
+    // unreferenced data) and proves the descriptors are real before M6 draws them.
+    ESP_LOGI(TAG, "宠物素材: %d 帧 %dx%d, 首帧 \"%s\" %u B, 共 %u B flash",
+             PASSPORT_PET_FRAME_COUNT, PASSPORT_PET_W, PASSPORT_PET_H,
+             passport_pet_frame_names[PASSPORT_PET_IDLE_A],
+             (unsigned)passport_pet_frames[PASSPORT_PET_IDLE_A]->data_size,
+             (unsigned)(PASSPORT_PET_FRAME_COUNT * PASSPORT_PET_W * PASSPORT_PET_H * 3));
 }
