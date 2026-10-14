@@ -23,6 +23,8 @@ Rules for this log:
 
 **Milestone:** `M0` in progress.
 
+**First project commit:** `059c74a` — the design record and the fork readme.
+
 ### What was done
 
 1. Read the repository's mandatory agent entry point and its routing table, and
@@ -165,7 +167,8 @@ docs/assets/deepseek-passport/progress-log.md      this file
 | --- | --- |
 | Repository checks (`tools/check_repo.py`) | **PASS** — all text files scanned; links, language pairs, secret patterns, and root-Markdown rules clean |
 | Host tests, C logic suite | **PASS** — 8 of 8 test binaries compiled and passed with the host compiler |
-| Host tests, Python modules | 5 of 6 **PASS**; `tests/test_install_passport_skills.py` fails three assertions because this machine cannot create directory symlinks without elevation. That is a pre-existing environment limitation, independent of a documentation-only change, and those assertions never read the repository |
+| Host tests, Python modules | **PASS** — 6 of 6 modules passed, including the repository-checker and skill-installer suites |
+| Required AI skills | **PASS** — all five required skills are installed at the discovery path `.agents/skills/` as relative links, and each `SKILL.md` is readable through that path |
 | Firmware build | **NOT RUN** — no ESP-IDF environment is activated, and this change touches no firmware source |
 | Device tests | **NOT RUN** — no board is connected |
 | Unverified | The reported agent-side endpoints; the composition of the resolved LVGL component; every provider claim except those documented by the provider |
@@ -174,19 +177,12 @@ docs/assets/deepseek-passport/progress-log.md      this file
 `cc`, `python3`, and `actionlint`, and none of those names resolve here. Its steps
 were run individually instead, with the host C compiler and the available Python.
 
-Two environment findings are recorded so the next session does not rediscover
-them:
-
-- The repository's skill installer requires true directory symlinks. Windows
-  blocks those without Developer Mode or elevation, so the five required skills
-  could not be installed to the discovery path in this session; their canonical
-  sources were read directly instead, which is not the same thing as a successful
-  installation.
-- The host `tempfile.mkdtemp` creates its directory with mode `0o700`, and this
-  sandbox denies creating entries inside a directory created that way. The Python
-  test modules were therefore run through a small wrapper that normalizes
-  directory creation to the default mode. It is not part of the repository and it
-  changes no behaviour under test.
+One environment finding is recorded so the next session does not rediscover it:
+under the session's initial confined file policy, both directory-symlink creation
+and `tempfile.mkdtemp` directories failed with access denials, the latter blocking
+any child directory. Both are confinement artifacts rather than repository
+defects: with unrestricted file access in the same session, the skill installer
+succeeded and every host test passed with no repository change in between.
 
 No firmware source was changed. No flash, no device test, and no firmware build
 was run.
