@@ -19,6 +19,72 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 14: the device configures itself over its own access point
+
+**Milestone:** first-time setup no longer needs a serial cable. The device raises a
+protected access point, serves a setup page over it, and saves what it is given.
+
+### What was built
+
+`passport_portal` holds the request logic as pure C with host tests: route selection
+(including the probe paths Android, Apple, Windows, and Firefox request to decide whether a
+network needs a login page), `application/x-www-form-urlencoded` decoding with `%XX` and
+`+`, and HTML escaping — the last because values arriving from the network end up inside a
+page.
+
+The form-to-configuration mapping lives in that pure module too, and the host test
+**cross-checks it against the configuration schema**: every field the portal accepts must
+name a field the schema really has. A typo there would otherwise be discovered by a user
+whose setting silently did not save.
+
+`passport_provision` is the radio and server side: an APSTA access point whose name and
+password derive from the MAC (stable across reboots, unique per device, shown on screen), a
+WPA2 password rather than an open network, an `esp_http_server` serving `/`, `/save`,
+`/api/status` and `/api/config`, and a catch-all that redirects every probe path to the
+setup page. Secrets are never rendered as field values: the page states whether one is
+stored and submits nothing unless a replacement is typed. A blank field means "leave
+unchanged", uniformly, so a careless save cannot destroy a working key.
+
+The console gained `prov status|start|stop|page [route]|form <k=v>`, which is how every
+claim above was checked without a browser.
+
+### Two hardware findings
+
+**Starting the access point dropped the station.** The two interfaces share one radio, and
+the access point was forcing channel 6 while the network was on channel 1. It now follows
+the station's channel and the association survives — verified by reading the station
+address before and after `prov start`.
+
+**The AP's SSID field is a fixed 32-byte array with no terminator.** The compiler's
+format-truncation warning caught the same class of bug the station path had; both now check
+their lengths explicitly and copy.
+
+A bounded reconnect was added at the same time: a link that drops is retried up to five
+times, and a disconnect the owner asked for is not retried at all.
+
+### Verified on the device
+
+```text
+prov status        down, then up: Passport-91E1, password derived from the MAC, 192.168.4.1
+wifi status        connected at 192.168.3.75 before and after prov start
+prov page status   {"wifi":"connected","rssi":-41,...,"largest_block":57344}
+prov page /generate_204   resolves to the redirect route
+prov form pet_name=Whale&volume=55   applied and saved; the config then reads volume 55
+prov form wifi_password=&pet_name=   "nothing to apply"; the stored password is intact
+prov stop          ESP_OK
+```
+
+### Not verified, and why
+
+A real HTTP request from a client over the access point. The device's own client cannot
+reach 192.168.4.1 — "Host is unreachable" — because outgoing traffic uses the station
+interface, so the request never loops back to the access point. That is a routing property
+rather than a portal defect, and proving the browser path means joining `Passport-XXXX`
+from a phone. **That is the user check this milestone hands over**: connect to the access
+point and the captive portal should appear by itself.
+
+---
+
 ## 2026-10-14 — Session 13: the font is generated from a real inventory, and the failure clears
 
 **Milestone:** the coverage failure reported last session is fixed, and it is fixed

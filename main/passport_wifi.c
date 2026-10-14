@@ -17,12 +17,17 @@ static const char *TAG = "passport_wifi";
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAILED_BIT    BIT1
 #define SCAN_MAX_AP        20
+// A device that sits on a shelf should rejoin by itself after a router blip. The cap stops
+// a wrong password from becoming an endless retry loop.
+#define RECONNECT_MAX      5
 
 static EventGroupHandle_t s_events;
 static esp_netif_t *s_netif;
 static passport_wifi_state_t s_state = PASSPORT_WIFI_IDLE;
 static char s_ip[16];
 static bool s_started;
+static bool s_user_disconnect;
+static int s_reconnects;
 
 const char *passport_wifi_state_name(passport_wifi_state_t state)
 {
@@ -69,6 +74,15 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
             xEventGroupSetBits(s_events, WIFI_FAILED_BIT);
         } else {
             s_state = PASSPORT_WIFI_IDLE;
+            // A link that was up and dropped gets retried, unless the user asked for the
+            // disconnect. This is what lets the device recover from a router restart
+            // without anyone touching it.
+            const passport_config_t *cfg = passport_config_current();
+            if (!s_user_disconnect && cfg->wifi_ssid[0] != '\0' && s_reconnects < RECONNECT_MAX) {
+                s_reconnects++;
+                ESP_LOGW(TAG, "连接已断开,重连 %d/%d", s_reconnects, RECONNECT_MAX);
+                esp_wifi_connect();
+            }
         }
         s_ip[0] = '\0';
         ESP_LOGW(TAG, "已断开连接");
@@ -89,6 +103,7 @@ static void on_ip_event(void *arg, esp_event_base_t base, int32_t id, void *data
     const ip_event_got_ip_t *event = (const ip_event_got_ip_t *)data;
     snprintf(s_ip, sizeof(s_ip), IPSTR, IP2STR(&event->ip_info.ip));
     s_state = PASSPORT_WIFI_CONNECTED;
+    s_reconnects = 0;   // a fresh association resets the retry budget
     xEventGroupSetBits(s_events, WIFI_CONNECTED_BIT);
     ESP_LOGI(TAG, "已获取地址: %s", s_ip);
 }
@@ -274,6 +289,8 @@ esp_err_t passport_wifi_connect(uint32_t timeout_ms)
 
     xEventGroupClearBits(s_events, WIFI_CONNECTED_BIT | WIFI_FAILED_BIT);
     s_state = PASSPORT_WIFI_CONNECTING;
+    s_user_disconnect = false;
+    s_reconnects = 0;
     s_ip[0] = '\0';
 
     err = esp_wifi_connect();
@@ -302,6 +319,8 @@ esp_err_t passport_wifi_disconnect(void)
     if (!s_started) {
         return ESP_OK;
     }
+    // Suppress the automatic retry: this disconnect was requested.
+    s_user_disconnect = true;
     const esp_err_t err = esp_wifi_disconnect();
     s_state = PASSPORT_WIFI_IDLE;
     s_ip[0] = '\0';

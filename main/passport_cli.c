@@ -35,6 +35,8 @@
 #include "passport_json.h"
 #include "passport_fonts.h"
 #include "passport_utf8.h"
+#include "passport_portal.h"
+#include "passport_provision.h"
 #include "passport_wifi.h"
 
 #define CLI_NAME_MAX 96
@@ -884,6 +886,81 @@ static int cmd_font(int argc, char **argv)
     return 0;
 }
 
+static int cmd_prov(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("usage: prov <status|start|stop|page [route]|form <k=v&k=v>>\n");
+        printf("  status        whether the setup access point is up, and its name\n");
+        printf("  start / stop  raise or drop the access point and its web console\n");
+        printf("  page [route]  print what a request would return: root, status, or config\n");
+        printf("  form <k=v..>  apply a submission exactly as a POST to /save would\n");
+        return 1;
+    }
+
+    const char *sub = argv[1];
+
+    if (strcmp(sub, "status") == 0) {
+        printf("access point : %s\n", passport_provision_active() ? "up" : "down");
+        printf("ssid         : %s\n", passport_provision_ssid());
+        printf("password     : %s\n", passport_provision_password());
+        printf("address      : http://%s/\n", passport_provision_address());
+        printf("station      : %s\n", passport_wifi_state_name(passport_wifi_state()));
+        return 0;
+    }
+
+    if (strcmp(sub, "start") == 0 || strcmp(sub, "stop") == 0) {
+        const bool start = (sub[0] == 's' && sub[1] == 't' && sub[2] == 'a');
+        const esp_err_t err = start ? passport_provision_start() : passport_provision_stop();
+        printf("prov %s: %s\n", sub, esp_err_to_name(err));
+        return (err == ESP_OK) ? 0 : 1;
+    }
+
+    if (strcmp(sub, "page") == 0) {
+        passport_portal_route_t route = PASSPORT_PORTAL_ROUTE_ROOT;
+        if (argc > 2) {
+            if (strcmp(argv[2], "status") == 0) {
+                route = PASSPORT_PORTAL_ROUTE_STATUS;
+            } else if (strcmp(argv[2], "config") == 0) {
+                route = PASSPORT_PORTAL_ROUTE_CONFIG;
+            } else if (strcmp(argv[2], "root") != 0) {
+                // Accept a literal path too, so the routing table can be exercised.
+                route = passport_portal_route(argv[2]);
+            }
+        }
+        static char page[2048];
+        const int written = passport_provision_render(route, page, sizeof(page));
+        if (written < 0) {
+            printf("prov page: route \"%s\" resolves to %s, which has no rendered body\n",
+                   (argc > 2) ? argv[2] : "/", passport_portal_route_name(route));
+            return 1;
+        }
+        printf("prov page: route=%s, %d bytes\n", passport_portal_route_name(route), written);
+        printf("%s\n", page);
+        return 0;
+    }
+
+    if (strcmp(sub, "form") == 0) {
+        if (argc < 3) {
+            printf("usage: prov form wifi_ssid=MyNet&llm_model=deepseek-chat\n");
+            printf("  applies the submission exactly as a POST to /save would; a blank value\n");
+            printf("  leaves that setting unchanged\n");
+            return 1;
+        }
+        const esp_err_t err = passport_provision_apply(argv[2]);
+        if (err == ESP_OK) {
+            printf("prov form: applied and saved\n");
+        } else if (err == ESP_ERR_INVALID_STATE) {
+            printf("prov form: nothing to apply (every field was blank or unknown)\n");
+        } else {
+            printf("prov form: %s\n", esp_err_to_name(err));
+        }
+        return (err == ESP_OK) ? 0 : 1;
+    }
+
+    printf("prov: unknown subcommand \"%s\"\n", sub);
+    return 1;
+}
+
 static int cmd_wifi(int argc, char **argv)
 {
     if (argc < 2) {
@@ -1119,6 +1196,7 @@ esp_err_t passport_cli_start(void)
     register_command("llm", "Language model: llm probe | llm ask <text>", &cmd_llm);
     register_command("font", "Text font: font probe | font shot", &cmd_font);
     register_command("wifi", "Wi-Fi station: status | scan | connect [ms] | disconnect", &cmd_wifi);
+    register_command("prov", "Setup portal: status | start | stop | page [route] | form <k=v>", &cmd_prov);
     register_command("config", "Configuration: list | get | set | save | reset", &cmd_config);
     register_command("audio", "Audio path: status | tone [ms] | loopback [ms] | mute-check", &cmd_audio);
     register_command("ui", "Screen inspection: tree | names | get | tap | key | screen", &cmd_ui);

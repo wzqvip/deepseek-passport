@@ -36,6 +36,7 @@ lv_obj_set_name(s_card, "audio");   /* the card labelled "Audio" */
 | `reboot` | 重启设备 |
 | `audio status\|tone [ms]\|loopback [ms]\|mute-check` | 当前哪个子系统占用音频通路；播放 1 kHz 单音；录一段再放回并给出电平读数；验证播放持有通路期间录音会被拒绝 |
 | `net probe <url>` | 对 URL 发 HTTPS GET；报告状态码、字节数，以及 TLS 会话活跃期间测得的堆内存 |
+| `prov status\|start\|stop\|page [route]\|form <k=v>` | 配网热点与它的 Web 控制台：开启或关闭；打印一次请求会返回的确切内容；或按 POST 到 `/save` 的方式应用一次提交 |
 | `font probe` \| `font check` \| `font shot` | 分别针对固定中文样本、**屏幕上真实显示的文本**给出字形覆盖；或把会话面板渲染成 ASCII 图，好在没有摄像头的情况下检查渲染 |
 | `llm probe` \| `llm ask <text>` | 向已配置端点 POST：`probe` 发一个最小补全（401 即证明传输通了）；`ask` 发一个问题并打印回答 |
 | `wifi status\|scan\|connect [ms]\|disconnect` | station 状态与地址；列出周边接入点（不需要任何凭据）；用已存凭据关联；断开关联 |
