@@ -10,6 +10,7 @@
 #define ZH_TWO   "\xE4\xB8\xAD\xE6\x96\x87"
 #define E_ACUTE  "\xC3\xA9"
 #define EMOJI    "\xF0\x9F\x98\x80"
+#define ZH_ONE   "\xE4\xBD\xA0"   // U+4F60, one three-byte character
 
 int main(void)
 {
@@ -106,6 +107,41 @@ int main(void)
     }
 
     assert(passport_utf8_truncate(NULL, 5u) == 0u);
+
+    // --- percent encoding for a query string ---------------------------------
+    {
+        char out[64];
+        // Unreserved characters pass through; a space and the characters that mean something in a
+        // query string are escaped.
+        assert(passport_url_encode("aZ09-_.~", out, sizeof(out)) == 8u);
+        assert(strcmp(out, "aZ09-_.~") == 0);
+        assert(passport_url_encode("a b", out, sizeof(out)) == 5u);
+        assert(strcmp(out, "a%20b") == 0);
+        assert(passport_url_encode("x=1&y=2", out, sizeof(out)) == 13u);
+        assert(strcmp(out, "x%3D1%26y%3D2") == 0);
+
+        // Chinese is encoded byte by byte from its UTF-8, which is what a server expects: three
+        // bytes per character, three escapes each.
+        assert(passport_url_encode(ZH_ONE, out, sizeof(out)) == 9u);
+        assert(strcmp(out, "%E4%BD%A0") == 0);
+
+        // Truncation reports what the whole encoding needed rather than a partial escape: a bare
+        // '%' or a '%E' in a URL is a malformed request, not a shorter one.
+        char tight[5];
+        const size_t needed = passport_url_encode(ZH_ONE, tight, sizeof(tight));
+        assert(needed == 9u);
+        assert(strlen(tight) % 3u == 0u);          // only whole escapes were written
+        assert(strchr(tight, '%') != NULL);
+        for (size_t i = 0u; tight[i] != '\0'; i += 3u) {
+            assert(tight[i] == '%');
+        }
+
+        // An empty string and a null pointer are both nothing to encode.
+        assert(passport_url_encode("", out, sizeof(out)) == 0u);
+        assert(out[0] == '\0');
+        assert(passport_url_encode(NULL, out, sizeof(out)) == 0u);
+        assert(out[0] == '\0');
+    }
 
     return 0;
 }

@@ -37,6 +37,14 @@ static volatile bool s_busy;
 static char *s_response;
 static char *s_answer;
 
+const char *passport_chat_last_reply(void)
+{
+    if (s_answer == NULL) {
+        return "";
+    }
+    return s_answer;
+}
+
 bool passport_chat_busy(void)
 {
     return s_busy;

@@ -163,6 +163,47 @@ esp_err_t passport_audio_play(const int16_t *buffer, size_t samples)
     return err;
 }
 
+esp_err_t passport_audio_play_begin(void)
+{
+    if (!passport_audio_arbiter_acquire(&s_owner, PASSPORT_AUDIO_PLAYBACK)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const esp_err_t err = passport_audio_open();
+    if (err != ESP_OK) {
+        passport_audio_arbiter_release(&s_owner, PASSPORT_AUDIO_PLAYBACK);
+    }
+    return err;
+}
+
+esp_err_t passport_audio_play_chunk(const int16_t *buffer, size_t samples)
+{
+    if (buffer == NULL || samples == 0u) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    // No arbiter work here: the caller took the path with _begin and owns it until _end. The same
+    // chunking as a one-shot play, so a long write cannot overflow the codec's own buffer.
+    esp_err_t err = ESP_OK;
+    size_t sent = 0u;
+    while (err == ESP_OK && sent < samples) {
+        size_t n = samples - sent;
+        if (n > CHUNK_SAMPLES) {
+            n = CHUNK_SAMPLES;
+        }
+        err = bsp_audio_write(buffer + sent, n * sizeof(int16_t));
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "播放失败: %s", esp_err_to_name(err));
+            break;
+        }
+        sent += n;
+    }
+    return err;
+}
+
+void passport_audio_play_end(void)
+{
+    passport_audio_arbiter_release(&s_owner, PASSPORT_AUDIO_PLAYBACK);
+}
+
 esp_err_t passport_audio_warmup(void)
 {
     if (!passport_audio_arbiter_acquire(&s_owner, PASSPORT_AUDIO_CAPTURE)) {

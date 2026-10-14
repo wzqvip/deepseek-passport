@@ -991,6 +991,34 @@ static int cmd_voice(int argc, char **argv)
         return 0;
     }
 
+    if (strcmp(argv[1], "speak") == 0) {
+        // Play the model's last answer, or the text given, through the bridge's synthesis. This is
+        // how the playback path is checked without speaking into the microphone.
+        if (argc > 2) {
+            static char sentence[256];
+            size_t used = 0u;
+            sentence[0] = '\0';
+            for (int i = 2; i < argc; i++) {
+                const size_t n = strlen(argv[i]);
+                if (used + n + 2u >= sizeof(sentence)) {
+                    break;
+                }
+                if (used > 0u) {
+                    sentence[used++] = ' ';
+                }
+                memcpy(sentence + used, argv[i], n);
+                used += n;
+                sentence[used] = '\0';
+            }
+            const esp_err_t err = passport_speech_speak(sentence);
+            printf("voice speak: %s\n", esp_err_to_name(err));
+            return (err == ESP_OK) ? 0 : 1;
+        }
+        const esp_err_t err = passport_speech_speak(NULL);
+        printf("voice speak: %s (the model's last answer)\n", esp_err_to_name(err));
+        return (err == ESP_OK) ? 0 : 1;
+    }
+
     if (strcmp(argv[1], "hold") == 0) {
         passport_speech_talk_down();
         printf("voice hold: the microphone should be open (see \"voice status\")\n");

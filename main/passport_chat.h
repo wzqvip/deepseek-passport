@@ -21,3 +21,8 @@ esp_err_t passport_chat_start(void);
 esp_err_t passport_chat_ask(const char *prompt);
 
 bool passport_chat_busy(void);
+
+// The model's most recent answer, or an empty string before the first one. Used by the voice path to
+// ask for that answer to be spoken; the text is owned by the chat worker and valid until the next
+// turn starts.
+const char *passport_chat_last_reply(void);

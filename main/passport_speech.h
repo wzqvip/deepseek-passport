@@ -30,6 +30,10 @@ void passport_speech_talk_up(void);
 // True while the microphone is open for a turn.
 bool passport_speech_listening(void);
 
+// Speak `text` through the bridge's synthesis, or the model's last answer when `text` is NULL.
+// Blocking for the length of the utterance; the microphone is closed throughout by the audio arbiter.
+esp_err_t passport_speech_speak(const char *text);
+
 // Describe the voice path for the console.
 void passport_speech_report(char *out, size_t out_size);
 

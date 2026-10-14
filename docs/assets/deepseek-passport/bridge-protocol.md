@@ -91,6 +91,16 @@ The transfer framing is written by the device's own code. Its HTTP client declar
 chunked and then writes the caller's bytes unframed, which a server reads as a chunk size followed by
 garbage; see `passport_speech.c`.
 
+**A correction, because this document previously said something false.** It claimed the device cannot
+read a response after a chunked upload, and offered that as the reason for the two-request shape. The
+claim came from a misread signature: `esp_http_client_fetch_headers` returns a *length* — a positive
+content length, 0 for a chunked body, -1 on error — and the code compared it with `ESP_OK`, so every
+response with a body looked like a transport failure. The client is fine; the mistake was ours.
+
+The two-request shape is kept, for a reason that survives the correction: a real bridge may spend
+seconds transcribing, and a separate `GET` lets it take that time without holding this socket open,
+while the answer arrives through the plain request path already proven on this device.
+
 ### `GET /voice/transcript`
 
 Returns the transcript of the most recent upload:
@@ -109,8 +119,23 @@ that the bridge was still transcribing. An empty `text` with `ready: 1` means th
 speech, and the device says so rather than asking the model about nothing.
 
 The recording's own success is judged **here**, not by the upload's response: a failed upload shows up
-as a bridge that never becomes ready. That is deliberate, because the upload's response cannot be read
-on this client at all.
+as a bridge that never becomes ready. That is deliberate, because the upload's response arrives on a
+connection the device has already finished with.
+
+### `GET /speak?text=<percent-encoded>`
+
+Returns the spoken form of `text` as raw little-endian 16-bit mono PCM at 16 kHz — the same shape the
+device uploads, so one format covers both directions. The device streams it into the speaker as it
+arrives, holding the audio path for the whole utterance, which is what keeps the microphone shut from
+the first sample to the last.
+
+- `404` or an empty body is **not a failure**: the answer is on the screen, so the turn simply ends
+  without sound.
+- The text is percent-encoded UTF-8, and **the device speaks a bounded prefix** of a long answer —
+  currently about 190 bytes, cut on a character boundary. A kilobyte of Chinese is half a minute of
+  audio, and the encoding triples whatever it carries. The full text is on the screen; the log says
+  when it was shortened.
+- The device does not read a `Content-Length` and does not care whether the body is chunked.
 
 ## 5. What the device does not do
 

@@ -5,6 +5,43 @@
 
 #define REPLACEMENT 0xFFFDu
 
+size_t passport_url_encode(const char *text, char *out, size_t out_size)
+{
+    static const char HEX[] = "0123456789ABCDEF";
+    const unsigned char *in = (const unsigned char *)text;
+    size_t written = 0u;
+    size_t needed = 0u;
+
+    if (out != NULL && out_size > 0u) {
+        out[0] = '\0';
+    }
+    if (text == NULL) {
+        return 0u;
+    }
+
+    for (size_t i = 0u; in[i] != 0u; i++) {
+        const unsigned char c = in[i];
+        const bool plain = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                           (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+        const size_t cost = plain ? 1u : 3u;
+        // Write only when the whole escape fits, so a truncated escape (a bare '%' or '%E') can
+        // never reach a server.
+        if (out != NULL && written + cost < out_size) {
+            if (plain) {
+                out[written] = (char)c;
+            } else {
+                out[written] = '%';
+                out[written + 1u] = HEX[(c >> 4) & 0x0Fu];
+                out[written + 2u] = HEX[c & 0x0Fu];
+            }
+            written += cost;
+            out[written] = '\0';
+        }
+        needed += cost;
+    }
+    return (out != NULL && written == needed) ? written : needed;
+}
+
 size_t passport_utf8_char_len(unsigned char lead)
 {
     if (lead < 0x80u) {

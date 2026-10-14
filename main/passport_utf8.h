@@ -26,3 +26,9 @@ size_t passport_utf8_count(const char *s);
 
 // Bytes that the character starting at `s` occupies, or 1 for an invalid lead byte.
 size_t passport_utf8_char_len(unsigned char lead);
+
+// Percent-encode text for a query string: letters, digits and `-_.~` pass through, everything else
+// becomes `%XX` from its UTF-8 bytes. Returns the number of bytes written, excluding the terminator;
+// when it does not fit, returns what the whole encoding would have needed, so a caller can tell
+// truncation from success. The output is always terminated when out_size > 0.
+size_t passport_url_encode(const char *text, char *out, size_t out_size);

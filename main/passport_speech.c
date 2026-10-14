@@ -16,6 +16,7 @@
 #include "passport_json.h"
 #include "passport_voice.h"
 #include "passport_wifi.h"
+#include "passport_utf8.h"
 
 // fetch_transcript() is defined after stream_turn() uses it.
 static int fetch_transcript(char *out, size_t out_size);
@@ -283,11 +284,18 @@ static int stream_turn(void)
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
 
-    // The upload's own answer is not used, and its status code is 0 because the response is never
-    // read — that is the point of fetching the transcript separately. Checking it here would only
-    // reintroduce the failure this design avoids, so what matters is that the bytes left, and the
-    // result is judged by the transcript request that follows. A failed upload shows up there as a
-    // bridge that never becomes ready.
+    // The upload's answer is not read, and there is a reason that is not the client's fault.
+    //
+    // An earlier version of this file called esp_http_client_fetch_headers() and compared its result
+    // with ESP_OK. It returns a *length* — a positive content length, 0 for a chunked body, -1 on
+    // error — so every response that had a body looked like a transport failure, and the conclusion
+    // drawn at the time was that this client cannot read a response after a chunked upload. That was
+    // wrong, and it is recorded here because the wrong conclusion is the more interesting part: a
+    // plausible-sounding limitation of someone else's code was in fact a misread signature.
+    //
+    // The two-request shape is kept anyway, for a reason that survives the correction: a real bridge
+    // may spend seconds transcribing, and a separate GET lets it take that time without holding this
+    // socket, while reusing the plain request path that is already proven on this device.
     ESP_LOGI(TAG, "音频已送达(%u KB),去取转写", (unsigned)(bytes / 1024u));
 
     static char text[PASSPORT_WORK_QUESTION_MAX];
@@ -304,12 +312,9 @@ static int stream_turn(void)
 
 // Ask the bridge for the transcript of the turn that was just uploaded.
 //
-// A separate request on purpose. After a chunked upload this client cannot read the answer to the
-// upload — header fetch reports a transport failure and a direct read returns nothing, while the
-// server has in fact answered, which was proven by sending the same shape of request from a
-// computer. Rather than fight that, the upload is fire-and-forget and the result is fetched the way
-// this project fetches everything else: a plain GET, which is already proven on this device by the
-// work client. The bridge keeps the most recent transcript; a device has one turn at a time.
+// A separate request, so that a bridge which takes seconds to transcribe does not have to hold the
+// upload's socket open, and so that the answer comes back through the plain request path this device
+// has already proven. The bridge keeps the most recent transcript; a device has one turn at a time.
 static int fetch_transcript(char *out, size_t out_size)
 {
     const passport_config_t *cfg = passport_config_current();
@@ -367,6 +372,141 @@ static int fetch_transcript(char *out, size_t out_size)
     }
     snprintf(s_last, sizeof(s_last), "the bridge was still transcribing after six attempts");
     return -4;
+}
+
+// Ask the bridge to synthesize the answer and play it as it arrives.
+//
+// The audio path is taken once for the whole utterance (passport_audio_play_begin/_end), so the
+// microphone stays closed from the first sample to the last. Playing chunk by chunk with the one-shot
+// call would release the path hundreds of times inside one answer, which is the hole the invariant
+// exists to close.
+//
+// A bridge without synthesis is not a failure: the reply is already on the screen, so a 404 or an
+// empty body just means the turn finishes quietly.
+static esp_err_t speak_text(const char *reply)
+{
+    const passport_config_t *cfg = passport_config_current();
+    if (reply == NULL || reply[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (cfg->bridge_url[0] == '\0' || passport_wifi_state() != PASSPORT_WIFI_CONNECTED) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // A long answer is spoken as a bounded prefix. Speaking a kilobyte of Chinese would be half a
+    // minute of audio, and the encoding for a query string triples whatever it carries, so an
+    // unbounded answer would need a buffer this board would rather spend elsewhere. The full text is
+    // on the screen; what is said is the beginning of it, and the log says when it was shortened.
+    char spoken[192];
+    const size_t keep = passport_utf8_truncate(reply, sizeof(spoken) - 1u);
+    memcpy(spoken, reply, keep);
+    spoken[keep] = '\0';
+    if (keep < strlen(reply)) {
+        ESP_LOGI(TAG, "回答较长(%u 字节),朗读前 %u 字节", (unsigned)strlen(reply), (unsigned)keep);
+    }
+
+    // The answer is Chinese, so it has to be escaped before it can sit in a query string.
+    static char encoded[768];
+    const size_t needed = passport_url_encode(spoken, encoded, sizeof(encoded));
+    if (needed >= sizeof(encoded)) {
+        ESP_LOGW(TAG, "朗读文本无法编码(%u 字节)", (unsigned)needed);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    char url[1024];
+    snprintf(url, sizeof(url), "%s/speak?text=%s", cfg->bridge_url, encoded);
+
+    const esp_http_client_config_t config = {
+        .url = url,
+        .method = HTTP_METHOD_GET,
+        .timeout_ms = 20000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    if (cfg->bridge_token[0] != '\0') {
+        char auth[160];
+        snprintf(auth, sizeof(auth), "Bearer %s", cfg->bridge_token);
+        esp_http_client_set_header(client, "Authorization", auth);
+    }
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        esp_http_client_cleanup(client);
+        return err;
+    }
+    // This returns a *length*, not a status: a positive content length, 0 for a chunked or
+    // length-less body, or -1 on error. Treating it as an esp_err_t is what made an earlier version
+    // of this file report a transport failure on every response that had a body — the same mistake,
+    // made twice, in the upload path and here. See the note beside the upload.
+    const int64_t length = esp_http_client_fetch_headers(client);
+    const int status = esp_http_client_get_status_code(client);
+    if (length < 0 || status != 200) {
+        ESP_LOGI(TAG, "桥接服务没有朗读音频(HTTP %d,长度 %lld),回答已上屏", status,
+                 (long long)length);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return (status == 404) ? ESP_ERR_NOT_FOUND : ESP_FAIL;
+    }
+
+    err = passport_audio_play_begin();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "音频通路被占用,无法朗读: %s", esp_err_to_name(err));
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return err;
+    }
+
+    // Bytes are read into a byte buffer and only whole samples are played. A read can end on an odd
+    // byte, and dropping it would shift every later sample by one byte — which is not a click, it is
+    // the rest of the sentence turned into noise. The leftover byte is carried into the next read.
+    //
+    // No byte swapping: the bridge sends little-endian PCM and so is this chip.
+    static uint8_t raw[CHUNK_SAMPLES * sizeof(int16_t)];
+    static int16_t samples_buf[CHUNK_SAMPLES];
+    size_t pending = 0u;
+    size_t played = 0u;
+    for (;;) {
+        const int read = esp_http_client_read(client, (char *)(raw + pending),
+                                             (int)(sizeof(raw) - pending));
+        if (read <= 0) {
+            break;
+        }
+        const size_t total = pending + (size_t)read;
+        const size_t whole = total / sizeof(int16_t);
+        if (whole > 0u) {
+            memcpy(samples_buf, raw, whole * sizeof(int16_t));
+        }
+        pending = total - whole * sizeof(int16_t);
+        if (pending > 0u) {
+            memmove(raw, raw + whole * sizeof(int16_t), pending);
+        }
+        if (whole == 0u) {
+            continue;
+        }
+        const esp_err_t write = passport_audio_play_chunk(samples_buf, whole);
+        if (write != ESP_OK) {
+            err = write;
+            break;
+        }
+        played += whole;
+    }
+    passport_audio_play_end();
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    snprintf(s_last, sizeof(s_last), "spoke %u KB (%u samples)",
+             (unsigned)((played * sizeof(int16_t)) / 1024u), (unsigned)played);
+    ESP_LOGI(TAG, "朗读完成:%u 个采样", (unsigned)played);
+    return (played > 0u) ? ESP_OK : ESP_FAIL;
+}
+
+// The public entry point, which the console uses to check playback without a spoken turn. `text` NULL
+// means the model's last answer.
+esp_err_t passport_speech_speak(const char *text)
+{
+    return speak_text((text != NULL) ? text : passport_chat_last_reply());
 }
 
 // Drive one whole turn. Runs on the speech task, so it may block.
@@ -436,6 +576,11 @@ static void run_turn(void)
             return;
         }
         passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_REPLY);
+        // The reply is on the screen by now; asking the bridge to say it is what closes the turn.
+        // The state machine insists the microphone is shut before this, and the arbiter enforces it.
+        if (speak_text(passport_chat_last_reply()) != ESP_OK) {
+            ESP_LOGI(TAG, "这一回合只上屏不发声");
+        }
         passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_SPEECH_DONE);
         snprintf(s_last, sizeof(s_last), "turn finished: said \"%s\"", s_last_transcript);
     }

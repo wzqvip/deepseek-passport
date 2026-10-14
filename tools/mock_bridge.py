@@ -73,6 +73,32 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self):  # noqa: N802 - the name is fixed by the base class
+        if self.path.startswith("/speak"):
+            # Speech synthesis. A real bridge calls its TTS provider here; the stand-in returns a
+            # short tone as raw little-endian 16-bit mono PCM at 16 kHz, which is enough to prove the
+            # device streams it into the speaker and keeps the microphone shut throughout.
+            import math
+            text = ""
+            if "text=" in self.path:
+                from urllib.parse import unquote
+                text = unquote(self.path.split("text=", 1)[1])
+            seconds = 1.0
+            rate = 16000
+            samples = int(rate * seconds)
+            pcm = bytearray()
+            for i in range(samples):
+                # A rising then falling tone, so the audio is obviously not silence.
+                value = int(6000 * math.sin(2 * math.pi * 660 * i / rate))
+                pcm += int(value).to_bytes(2, "little", signed=True)
+            print(f"GET /speak -> text={text!r}; returning {len(pcm)} bytes of PCM "
+                  f"({seconds:.1f} s)", flush=True)
+            payload = bytes(pcm)
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/L16;rate=16000;channels=1")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if self.path.rstrip("/") == "/voice/transcript":
             with LOCK:
                 # `ready` is 1 or 0 rather than true/false: the device reads it with an integer

@@ -49,6 +49,17 @@ esp_err_t passport_audio_capture(int16_t *buffer, size_t samples, passport_audio
 // Play `samples` mono samples. The microphone stays closed for the whole call.
 esp_err_t passport_audio_play(const int16_t *buffer, size_t samples);
 
+// Play an utterance that arrives in pieces — a reply synthesized by a service, for instance.
+//
+// The audio path is taken once by `_begin` and released once by `_end`, so a long answer does not
+// hand the arbiter back between chunks. That matters: the invariant this project protects is that the
+// microphone is never open while the device is speaking, and playing chunk by chunk with
+// passport_audio_play() would release and re-take the path hundreds of times inside one answer,
+// leaving room for a capture in between.
+esp_err_t passport_audio_play_begin(void);
+esp_err_t passport_audio_play_chunk(const int16_t *buffer, size_t samples);
+void passport_audio_play_end(void);
+
 // Fill `buffer` with a 1 kHz tone, for a speaker check that needs no microphone.
 void passport_audio_fill_tone(int16_t *buffer, size_t samples);
 

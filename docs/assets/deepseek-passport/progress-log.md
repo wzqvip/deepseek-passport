@@ -19,6 +19,64 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 29: the answer is spoken, and a wrong diagnosis corrected
+
+**Milestone:** the voice loop is complete. Hold OK, speak, release: the audio streams to the bridge,
+the transcript comes back, the model answers, and **the answer is played through the speaker** — with
+the microphone provably shut for the whole utterance.
+
+### What was built
+
+`GET <bridge>/speak?text=…` returns the spoken form as raw PCM, the same format the device uploads, so
+one shape covers both directions. The device streams it into the speaker as it arrives, and the audio
+path is taken **once for the whole utterance** by a new `passport_audio_play_begin/_chunk/_end`. That
+detail is the point: playing chunk by chunk with the one-shot call would hand the arbiter back hundreds
+of times inside a single answer, leaving room for a capture in between, which is exactly the hole the
+invariant exists to close.
+
+A long answer is spoken as a bounded prefix — about 190 bytes, cut on a character boundary. A kilobyte
+of Chinese is half a minute of audio, and percent-encoding triples whatever it carries; the full text is
+on the screen and the log says when it was shortened. Replies are Chinese, so the query string needed a
+percent-encoder, which is now a pure function with host tests of its own — including that a truncated
+encoding is refused rather than sent as a bare `%` or `%E`.
+
+### Verified on the device
+
+```text
+hold, speak seven seconds, release
+  released after 361 chunks, 231040 bytes
+  bridge log: POST /voice -> 231040 bytes of PCM (7.2 s at 16 kHz)
+              GET  /voice/transcript -> ready=1
+  transcript: which branch should I deploy
+  bridge log: GET /speak -> text='I can help you figure out which branch to deploy,
+              but I need a bit more context. Could you share: ...'
+  audio status: owner = playback, microphone = closed (playback holds the path)
+  afterwards:   state=idle, owner=free, microphone=allowed, 46248 B free / 32768 largest
+```
+
+The middle two lines are the whole feature: the model's own answer was asked for as speech, and while it
+played, the arbiter held the path and the microphone was shut. The last line is the turn closing
+cleanly with nothing left behind.
+
+### The correction I owe this project
+
+Session 27 concluded that this HTTP client "cannot read the answer after a chunked upload", and Session
+28 built a protocol around it. **That was wrong.** `esp_http_client_fetch_headers` returns a *length* —
+a positive content length, 0 for a chunked body, -1 on error — and the code compared it with `ESP_OK`,
+so every response that had a body looked like a transport failure. The client is fine.
+
+What makes this worth recording is the shape of the error rather than the bug: a plausible-sounding
+limitation in someone else's code was accepted and written into a contract, when the only evidence for
+it was a log line produced by my own type confusion. The code comment, the protocol document and the
+progress log all now say what actually happened. The two-request design is kept — a bridge that spends
+seconds transcribing should not have to hold the upload's socket — but it is kept on its own merits
+rather than on a defect that never existed.
+
+The second ESP-IDF observation from Session 27 stands and is verified: the client declares a chunked
+request body and writes the caller's bytes unframed.
+
+---
+
 ## 2026-10-14 — Session 28: the voice turn works, end to end
 
 **Milestone:** hold OK, speak, release — and the answer comes back. The audio streams to the bridge,
