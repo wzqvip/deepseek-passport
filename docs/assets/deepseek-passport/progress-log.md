@@ -96,6 +96,38 @@ cause was taken at the time, so the wake source rests on documentation rather th
 on a log from this device. A future capture of the wake-cause line would close
 that gap.
 
+### Serial console verified on the device
+
+The console was flashed and exercised over `COM47`. Inspection and control both
+work, and the exercise found one real defect in the console itself.
+
+Working: `ver` reports build `4d05296`; `ui screen` reports `menu 240x320
+children=39`; `ui names` prints every object as a path with its on-screen text,
+including names derived from the visible labels (`display`, `button`, `audio`,
+`battery`, `wi-fi`, `ble`, `low-power`); `ui key down click` followed by
+`ui key ok click` enters a page; `ui tree 1` dumps the new screen; `ui key ok
+long` returns to the menu. The loop closes, so a host can drive the device and
+read back what is drawn.
+
+Defect found and fixed: `lv_obj_get_name_resolved()` faults with a load access
+fault on an **unnamed root screen** in this LVGL version. It appeared to work only
+because the menu screen carries a user-set name. The console now reads
+`lv_obj_get_name()` directly, builds a synthetic label for unnamed objects, and
+resolves paths with its own walk instead of LVGL's name lookup. The consequence is
+worth stating plainly: **only objects with a user-set name are addressable**;
+unnamed objects still appear in the tree for inspection.
+
+Also learned: the baseline demo's menu is driven by button events, not by widget
+clicks, so `ui tap` cannot enter a page there — its cards register no click
+handler. `ui tap` stays correct for a UI that does register handlers, which the M1
+application will.
+
+Measurements taken while the console was up, on the menu screen: free heap
+142,600 B, minimum 138,544 B, **largest free block 112 KiB**; the LVGL pool free
+4,008 B of 24 KB with a high-water mark of 18,452 B and 9% fragmentation; battery
+97%; released keypad 2,964 mV. The LVGL pool figure is the first concrete sign
+that the baseline demo already spends most of a 24 KB pool.
+
 ### Validation for this session
 
 | Check | Result |

@@ -50,6 +50,20 @@ static const char *class_name(const lv_obj_t *obj)
     return "widget";
 }
 
+// Resolve a display name without LVGL's resolver. lv_obj_get_name_resolved()
+// faults on an unnamed root screen in this LVGL version, so a user-set name is
+// read directly and anything else gets a synthetic label from its class plus its
+// position among its siblings.
+static void safe_name(const lv_obj_t *obj, int index, char *buf, size_t size)
+{
+    const char *set = lv_obj_get_name(obj);
+    if (set != NULL) {
+        snprintf(buf, size, "%s", set);
+    } else {
+        snprintf(buf, size, "%s_%d", class_name(obj), index);
+    }
+}
+
 // Printable text of a label, or NULL for anything else.
 static const char *label_text(const lv_obj_t *obj)
 {
@@ -83,11 +97,11 @@ static void print_metrics(const char *tag)
 
 // --- ui commands ------------------------------------------------------------
 
-static void walk_tree(lv_obj_t *obj, int depth, int max_depth)
+static void walk_tree(lv_obj_t *obj, int index, int depth, int max_depth)
 {
     char name[CLI_NAME_MAX];
     char textbuf[CLI_NAME_MAX + 8];
-    lv_obj_get_name_resolved(obj, name, sizeof(name));
+    safe_name(obj, index, name, sizeof(name));
 
     const char *text = label_text(obj);
     if (text != NULL) {
@@ -110,22 +124,43 @@ static void walk_tree(lv_obj_t *obj, int depth, int max_depth)
     }
     const uint32_t count = lv_obj_get_child_count(obj);
     for (uint32_t i = 0u; i < count; i++) {
-        walk_tree(lv_obj_get_child(obj, (int32_t)i), depth + 1, max_depth);
+        walk_tree(lv_obj_get_child(obj, (int32_t)i), (int)i, depth + 1, max_depth);
     }
 }
 
-// Resolve a name path or a search term against the active screen.
+// Resolve a slash-separated path of user-set names against the active screen.
+// Only named objects are addressable, which is exactly the set that carries
+// meaning on the display; unnamed ones still appear in the tree for inspection.
+static lv_obj_t *find_by_path(lv_obj_t *parent, const char *path)
+{
+    const char *slash = strchr(path, '/');
+    const size_t len = (slash != NULL) ? (size_t)(slash - path) : strlen(path);
+    if (len == 0u || len >= CLI_NAME_MAX) {
+        return NULL;
+    }
+    char segment[CLI_NAME_MAX];
+    memcpy(segment, path, len);
+    segment[len] = '\0';
+
+    const uint32_t count = lv_obj_get_child_count(parent);
+    for (uint32_t i = 0u; i < count; i++) {
+        lv_obj_t *child = lv_obj_get_child(parent, (int32_t)i);
+        const char *name = lv_obj_get_name(child);
+        if (name == NULL || strcmp(name, segment) != 0) {
+            continue;
+        }
+        return (slash == NULL) ? child : find_by_path(child, slash + 1);
+    }
+    return NULL;
+}
+
 static lv_obj_t *resolve(const char *term)
 {
     lv_obj_t *screen = lv_screen_active();
     if (screen == NULL) {
         return NULL;
     }
-    lv_obj_t *obj = lv_obj_get_child_by_name(screen, term);
-    if (obj == NULL) {
-        obj = lv_obj_find_by_name(screen, term);
-    }
-    return obj;
+    return find_by_path(screen, term);
 }
 
 // A tap should land on something clickable: if the named object is a plain
@@ -163,7 +198,7 @@ static int cmd_ui_tree(int argc, char **argv)
         return 1;
     }
     printf("active screen:\n");
-    walk_tree(screen, 0, max_depth);
+    walk_tree(screen, 0, 0, max_depth);
     bsp_lvgl_unlock();
     return 0;
 }
@@ -171,11 +206,11 @@ static int cmd_ui_tree(int argc, char **argv)
 // Print every object as a path relative to the active screen. These are exactly
 // the strings that `ui get` and `ui tap` accept, which is what ties the console
 // list to what is drawn on the display.
-static void print_names(lv_obj_t *obj, const char *prefix)
+static void print_names(lv_obj_t *obj, int index, const char *prefix)
 {
     char name[CLI_NAME_MAX];
     char path[CLI_NAME_MAX * 2];
-    lv_obj_get_name_resolved(obj, name, sizeof(name));
+    safe_name(obj, index, name, sizeof(name));
     if (prefix[0] == '\0') {
         snprintf(path, sizeof(path), "%s", name);
     } else {
@@ -189,7 +224,7 @@ static void print_names(lv_obj_t *obj, const char *prefix)
     }
     const uint32_t count = lv_obj_get_child_count(obj);
     for (uint32_t i = 0u; i < count; i++) {
-        print_names(lv_obj_get_child(obj, (int32_t)i), path);
+        print_names(lv_obj_get_child(obj, (int32_t)i), (int)i, path);
     }
 }
 
@@ -208,11 +243,11 @@ static int cmd_ui_names(int argc, char **argv)
         return 1;
     }
     char sname[CLI_NAME_MAX];
-    lv_obj_get_name_resolved(screen, sname, sizeof(sname));
+    safe_name(screen, 0, sname, sizeof(sname));
     printf("%-34s %-10s (active screen)\n", sname, class_name(screen));
     const uint32_t count = lv_obj_get_child_count(screen);
     for (uint32_t i = 0u; i < count; i++) {
-        print_names(lv_obj_get_child(screen, (int32_t)i), "");
+        print_names(lv_obj_get_child(screen, (int32_t)i), (int)i, "");
     }
     bsp_lvgl_unlock();
     return 0;
@@ -235,7 +270,7 @@ static int cmd_ui_get(int argc, char **argv)
         return 1;
     }
     char name[CLI_NAME_MAX];
-    lv_obj_get_name_resolved(obj, name, sizeof(name));
+    safe_name(obj, 0, name, sizeof(name));
     const char *text = label_text(obj);
     printf("%-26s %-10s %4d,%4d %4dx%-4d%s%s\n", name, class_name(obj),
            (int)lv_obj_get_x(obj), (int)lv_obj_get_y(obj),
@@ -267,7 +302,7 @@ static int cmd_ui_tap(int argc, char **argv)
     }
     lv_obj_t *target = clickable_target(obj);
     char name[CLI_NAME_MAX];
-    lv_obj_get_name_resolved(target, name, sizeof(name));
+    safe_name(target, 0, name, sizeof(name));
     const lv_result_t res = lv_obj_send_event(target, LV_EVENT_CLICKED, NULL);
     printf("ui tap: sent CLICKED to %s (%s) -> %s\n", name, class_name(target),
            res == LV_RESULT_OK ? "handled" : "no handler / deleted");
@@ -290,7 +325,7 @@ static int cmd_ui_screen(int argc, char **argv)
         return 1;
     }
     char name[CLI_NAME_MAX];
-    lv_obj_get_name_resolved(screen, name, sizeof(name));
+    safe_name(screen, 0, name, sizeof(name));
     printf("screen %s  %dx%d  children=%u\n", name,
            (int)lv_obj_get_width(screen), (int)lv_obj_get_height(screen),
            (unsigned)lv_obj_get_child_count(screen));
