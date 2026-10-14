@@ -19,6 +19,61 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 9: the device talks to DeepSeek, and the TLS number arrives
+
+**Milestone:** the provider path is proven end to end, and the measurement the
+architecture document has been waiting for is in.
+
+### Result
+
+After associating with the network and issuing `llm probe`:
+
+```text
+llm probe: HTTP 200, 452 bytes, 1730 ms
+  with the session live: free heap 80376 B, largest free block 69632 B (68 KiB)
+  body: {"id":"...","object":"chat.completion",...,"model":"deepseek-flash",
+         "choices":[{"index":0,"message":{"role":"assistant","content":"p"},
+         "finish_reason":"length"}],...}
+```
+
+A real completion came back. That one result proves DNS resolution, the TLS handshake
+against the certificate bundle, the HTTP POST, the bearer credential, the provider's
+response, and the capped read path — 1,730 ms including the handshake, which is also
+the first real number for the latency budget.
+
+### The number that was missing
+
+| Situation | Free heap | Largest free block |
+| --- | --- | --- |
+| Idle, no radio | 154,624 B | 112 KiB |
+| Wi-Fi associated, no TLS | 163,580 B | 112 KiB |
+| **TLS session live** | **80,376 B** | **68 KiB** |
+
+The largest contiguous block falls from 112 KiB to **68 KiB** once a TLS session
+exists. That is the figure this project has been calling its real constraint, and it
+is now measured rather than estimated. It remains comfortably above what a chunked
+PCM pipeline needs, so direct mode stays viable — but the margin is 68 KiB, not
+112 KiB, and every future buffer has to be weighed against that number.
+
+### A second crash found only by running it
+
+`llm probe` first died with `Guru Meditation Error: Stack protection fault`, in task
+`console_repl`. The console task had a 4096-byte stack, which cannot hold an mbedTLS
+handshake; it is now 10240 bytes, with the reason recorded next to the setting so the
+next person does not shrink it back. This is the second defect this milestone has
+produced that was invisible from the source.
+
+### Credentials
+
+The Wi-Fi password and the API key were supplied by the owner and written only to the
+device's NVS. They were not committed, not written into documentation, and not logged;
+the console renders them only as set or empty, and the captured device output was
+checked for both strings — neither appeared. The key did pass through the chat
+transcript at the owner's choice, so **rotating it is the owner's call and costs one
+console command**.
+
+---
+
 ## 2026-10-14 — Session 8: the HTTPS transport, and a crash the device found
 
 **Milestone:** the transport half of the provider path. The device can issue an HTTPS

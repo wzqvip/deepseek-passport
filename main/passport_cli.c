@@ -810,7 +810,11 @@ esp_err_t passport_cli_start(void)
     const esp_console_repl_config_t repl_config = {
         .max_history_len = 32,
         .history_save_path = NULL,
-        .task_stack_size = 4096,
+        // A TLS handshake needs far more than the usual 4 KB. Running `llm probe`
+        // from this task overflowed a 4096-byte stack and panicked with a stack
+        // protection fault, so the console task is sized for the work it can be
+        // asked to do. Any command that performs networking runs here.
+        .task_stack_size = 10240,
         .task_priority = 2,
         .task_core_id = tskNO_AFFINITY,
         .prompt = "passport> ",

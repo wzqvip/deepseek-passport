@@ -688,6 +688,24 @@ contiguous free block was about 13 KiB before the soft access point and about
 each need one large contiguous allocation, so this project budgets the largest
 free block first and everything else second.
 
+### Measured on this board
+
+The estimates above are replaced by measurements wherever one exists. These come from
+the application running on the device:
+
+| Situation | Free heap | Largest free block |
+| --- | --- | --- |
+| Idle, radio down | 154,624 B | 112 KiB |
+| Wi-Fi associated, no TLS | 163,580 B | 112 KiB |
+| **TLS session live with a provider request in flight** | **80,376 B** | **68 KiB** |
+
+The binding resource is real, and it is the largest block: **a live TLS session
+consumes about 44 KiB of the largest contiguous block, leaving 68 KiB.** That is the
+number every future buffer is weighed against, and it is the reason the audio pipeline
+streams PCM in small chunks instead of staging a turn in RAM. The provider round trip
+itself measured 1,730 ms including the handshake, against the latency budget that
+assumed a first-audio target of 2.5 s for three sequential stages.
+
 Standing rules that follow from that:
 
 - Log `lv_mem_monitor()`, `esp_get_free_heap_size()`, and the largest free block
