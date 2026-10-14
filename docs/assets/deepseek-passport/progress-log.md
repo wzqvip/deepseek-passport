@@ -19,6 +19,54 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 13: the font is generated from a real inventory, and the failure clears
+
+**Milestone:** the coverage failure reported last session is fixed, and it is fixed
+against the instrument that found it.
+
+### What was built
+
+The character inventory is **derived, not copied**: every valid character in the
+GB2312/CP936 lead and trail byte ranges `0xA1A1`–`0xF7FE`, plus printable ASCII —
+8,273 code points, committed as `assets/fonts/cjk-inventory.txt`. Deriving it means its
+membership is verifiable and its reproduction needs no third-party list.
+
+`tools/make_cjk_font.mjs` turns that inventory into an LVGL font with a pinned
+`lv_font_conv` 1.5.3, from `SourceHanSansSC-Normal.otf` — the SIL Open Font License file
+that already ships inside LVGL. That choice is deliberate: a bitmap subset of an OFL font
+may be redistributed, while most system fonts may not, and a repository shipping such a
+subset has a licensing problem. The generated file, its inventory, and the command are all
+under version control, and `assets/README.md` records the source, license, size, and the
+regeneration steps.
+
+LVGL's built-in Source Han Sans sample is now switched **off** rather than left in place;
+it was the thing that measured short.
+
+### Verified on the device
+
+The same reply that previously scored 8 missing glyphs, checked after the change:
+
+```text
+font check: 22 code points on screen; 0 have no real glyph
+  text   : the same Chinese sentence as last session
+  missing: (none)
+```
+
+The ASCII snapshot changed character too. Where the panel previously showed hollow
+placeholder boxes, the shapes are now dense, and the closing question mark is visible.
+So the fix is confirmed by the same instrument that reported the defect, on the same
+input.
+
+### Cost
+
+The generated font adds about 0.5 MB of Flash and takes the build from a few seconds to
+roughly three minutes, because the generated C file is 3.5 MB. The application image is
+now 0x21a7d0 with 73% of the partition free. The 699 code points in the inventory that the
+source font does not contain are skipped by the converter and are reported by `font check`
+if they ever reach the display.
+
+---
+
 ## 2026-10-14 — Session 12: the font is wired in and measured — the built-in subset is not enough
 
 **Milestone:** the display renders Chinese through a font the application selects, and

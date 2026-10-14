@@ -32,9 +32,14 @@ CONFIG_LV_USE_OBJ_NAME=y
 
 # --- 字体 ---
 # 中文必须能显示。默认的 Montserrat 没有任何中日韩字形,而 UTF-8 与"构建成功"
-# 都不能证明字形存在。这个内置子集随 LVGL 一起提供(Source Han Sans SC,OFL),
-# 编译后约占 1.2 MB flash;应用分区还剩约 6.5 MB,预算足够。
-CONFIG_LV_FONT_SOURCE_HAN_SANS_SC_16_CJK=y
+# 都不能证明字形存在。
+#
+# LVGL 内置的 Source Han Sans SC 子集**刻意不再启用**:它是给 LVGL 自家测试用的
+# 精选样本,实测对一次真实的模型回复 22 个码点里缺 8 个(含全角 ！和 ？)。
+# 应用改用自己生成的子集:assets/fonts/passport_cjk_16.c,
+# 由 tools/make_cjk_font.mjs 从 assets/fonts/cjk-inventory.txt 生成。
+# 清单是 8178 个由 GB2312/CP936 字节范围推出的字符 + 可打印 ASCII。
+# 源字体是随 LVGL 提供的 Source Han Sans SC(OFL),许可允许再分发。
 # 保留占位符字形,好让缺失的字形看得见,而不是变成空白。
 CONFIG_LV_USE_FONT_PLACEHOLDER=y
 # 允许把控件渲染成图,用于在真机上取得"字形确实被光栅化"的证据。

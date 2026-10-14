@@ -9,10 +9,10 @@
 
 static const char *TAG = "passport_fonts";
 
-// The built-in Source Han Sans SC subset, enabled by
-// CONFIG_LV_FONT_SOURCE_HAN_SANS_SC_16_CJK. It covers the CJK ranges plus Latin, so it
-// can carry the conversation text on its own.
-LV_FONT_DECLARE(lv_font_source_han_sans_sc_16_cjk);
+// The application's own subset, generated from assets/fonts/cjk-inventory.txt by
+// tools/make_cjk_font.mjs. It replaces LVGL's built-in Source Han Sans sample, which
+// measured 8 missing glyphs out of 22 in a single real reply.
+LV_FONT_DECLARE(passport_cjk_16);
 
 static lv_font_t s_body;
 
@@ -20,12 +20,12 @@ void passport_fonts_init(void)
 {
     // A shallow copy of a static bitmap font, which is the pattern the repository's font
     // guide prescribes for attaching a fallback without touching the read-only original.
-    s_body = lv_font_source_han_sans_sc_16_cjk;
+    s_body = passport_cjk_16;
     // The fallback is for symbols the CJK face does not carry. It is deliberately not a
-    // metrics match: Source Han Sans covers Latin itself, so the fallback should rarely
-    // be reached in conversation text.
+    // metrics match: the CJK face covers Latin itself, so the fallback should rarely be
+    // reached in conversation text.
     s_body.fallback = &lv_font_montserrat_14;
-    ESP_LOGI(TAG, "正文字体:Source Han Sans SC 16 + Montserrat 14 回退");
+    ESP_LOGI(TAG, "正文字体:passport_cjk_16(应用子集)+ Montserrat 14 回退");
 }
 
 const lv_font_t *passport_font_body(void)

@@ -23,3 +23,10 @@ idf_component_register(
     INCLUDE_DIRS "." "assets"
     REQUIRES bsp bt console esp-tls esp_app_format esp_event esp_http_client esp_hw_support esp_netif esp_timer esp_wifi mbedtls nvs_flash
 )
+
+# The generated CJK font. Kept out of SRCS because it lives under the repository's
+# reusable assets directory, with its inventory and generator beside it. Regenerate with
+# "node tools/make_cjk_font.mjs"; do not edit the generated file.
+target_sources(${COMPONENT_LIB} PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../assets/fonts/passport_cjk_16.c"
+)
