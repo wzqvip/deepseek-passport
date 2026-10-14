@@ -41,13 +41,29 @@ bool passport_provision_active(void)
     return s_active;
 }
 
+// Defined further down, next to the radio setup it feeds.
+static void derive_identity(void);
+
+// The access point name and password come from the MAC, so they are a function of the device
+// rather than of whether the radio has been started. Deriving them on demand removes an
+// ordering trap: these accessors used to return empty strings until start() had run, so a
+// caller that needed the credentials early silently built a code for the wrong payload.
+static void ensure_identity(void)
+{
+    if (s_ssid[0] == '\0') {
+        derive_identity();
+    }
+}
+
 const char *passport_provision_ssid(void)
 {
+    ensure_identity();
     return s_ssid;
 }
 
 const char *passport_provision_password(void)
 {
+    ensure_identity();
     return s_password;
 }
 
@@ -332,8 +348,7 @@ esp_err_t passport_provision_start(void)
 
     derive_identity();
 
-    s_page = malloc(PAGE_MAX);
-    if (s_page == NULL) {
+    s_page = malloc(PAGE_MAX);    if (s_page == NULL) {
         ESP_LOGE(TAG, "页面缓冲分配失败");
         return ESP_ERR_NO_MEM;
     }

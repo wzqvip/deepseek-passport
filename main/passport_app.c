@@ -257,6 +257,35 @@ static int qr_render(void)
     return side;
 }
 
+// Reserve the code's pixel buffer now, at start-up, rather than when the setup screen is first
+// built. Allocating it late split whatever large block remained and left only about 22 KB
+// contiguous, which is not enough for a snapshot of the same code — the verification tool was
+// starved by the thing it was trying to verify. Reserving first also matches the rule this
+// project follows elsewhere: allocate a hot buffer once.
+static void qr_reserve(void)
+{
+    char payload[192];
+    qr_payload(payload, sizeof(payload));
+
+    passport_qr_t code;
+    if (!passport_qr_encode(payload, &code)) {
+        return;
+    }
+    const int modules = (int)code.size + 2 * QR_QUIET_ZONE;
+    int scale = QR_TARGET_SIDE / modules;
+    if (scale < 2) {
+        scale = 2;
+    }
+    const int side = modules * scale;
+
+    s_qr_pixels = heap_caps_malloc((size_t)side * (size_t)side * sizeof(uint16_t),
+                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    s_qr_side = (s_qr_pixels != NULL) ? side : 0;
+    if (s_qr_pixels != NULL) {
+        ESP_LOGI(TAG, "二维码缓冲已预留:%d 字节(%d 像素)", side * side * 2, side);
+    }
+}
+
 static void setup_refresh(void)
 {
     if (s_setup_hotspot == NULL) {
@@ -412,6 +441,9 @@ esp_err_t passport_app_start(void)
     } else {
         ESP_LOGI(TAG, "音频通路已预热(16kHz/16bit/单声道)");
     }
+
+    // Before anything else grows the heap.
+    qr_reserve();
 
     // A device with no network configured has nothing to say and no way to be set up
     // without a cable, so it raises its own access point and says so on the panel.

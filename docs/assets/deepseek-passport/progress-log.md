@@ -19,6 +19,49 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 18: reserved early, derived on demand — built and flashed, not yet device-verified
+
+**Status:** build PASS, flashed to the device. **Device verification did not happen**, for a
+host-side reason recorded below. This entry therefore claims nothing about behaviour.
+
+### Two changes
+
+**The access point credentials are derived on demand.** They come from the MAC, so they are a
+function of the device rather than of whether the radio has been started. The accessors used
+to return empty strings until `passport_provision_start()` had run, and that trap was observed
+last session: `prov qr` reported an 18-byte payload — `WIFI:T:WPA;S:;P:;;` — because the code
+was asked for before the access point came up. Nothing would have told a caller that the
+answer was incomplete.
+
+**The code's pixel buffer is reserved at start-up** instead of when the setup screen is first
+built. The measurement that motivated it: with the setup screen up, free heap was 31,084 bytes
+but the largest contiguous block was only 22,528 bytes, and stopping the access point raised
+free heap to 49,136 bytes without changing the largest block at all. The pixel buffer, allocated
+late, had split the block, so a 24,642-byte snapshot could not be allocated while the code it
+wanted to photograph was using exactly that much. The verification tool was starved by the
+thing it was verifying. Reserving before the heap grows also matches the rule this project
+follows elsewhere: allocate a hot buffer once.
+
+### Why there is no device verification
+
+The host's serial port was left locked by two of my own commands that hung during the
+previous session's attempts. I freed it once by killing a stale process, then lost it again —
+and in one attempt I killed processes too broadly and took my own shell with them. Later
+opens blocked while the device console was streaming.
+
+The lesson is about my own tooling rather than the firmware: a serial helper that can block
+indefinitely will eventually hold the port, and the next command then fails in a way that
+looks like a device fault. Every serial helper in this project's notes should read with a hard
+deadline and never spin without one.
+
+### What the next attempt must check
+
+1. `prov qr` before `prov start` reports a 40-byte payload, which is the on-demand identity fix.
+2. `font shot qr dark` allocates and prints the code, which is the reservation fix.
+3. Power-cycle the device first: its console may still be streaming.
+
+---
+
 ## 2026-10-14 — Session 17: the code is on the panel, and it matches the reference
 
 **Milestone:** the setup screen carries a QR code that joins the hotspot, so setup needs no
