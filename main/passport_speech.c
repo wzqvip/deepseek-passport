@@ -12,9 +12,13 @@
 #include "passport_audio.h"
 #include "passport_chat.h"
 #include "passport_config_store.h"
+#include "passport_http.h"
 #include "passport_json.h"
 #include "passport_voice.h"
 #include "passport_wifi.h"
+
+// fetch_transcript() is defined after stream_turn() uses it.
+static int fetch_transcript(char *out, size_t out_size);
 
 static const char *TAG = "passport_speech";
 
@@ -276,39 +280,93 @@ static int stream_turn(void)
         total += read;
     }
     response[total] = '\0';
-    const int status = esp_http_client_get_status_code(client);
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
 
-    if (total == 0) {
-        snprintf(s_last, sizeof(s_last), "no answer body after %u KB", (unsigned)(bytes / 1024u));
-        return -1;
-    }
-    if (status != 200) {
-        snprintf(s_last, sizeof(s_last), "bridge returned HTTP %d", status);
-        return status;
-    }
+    // The upload's own answer is not used, and its status code is 0 because the response is never
+    // read — that is the point of fetching the transcript separately. Checking it here would only
+    // reintroduce the failure this design avoids, so what matters is that the bytes left, and the
+    // result is judged by the transcript request that follows. A failed upload shows up there as a
+    // bridge that never becomes ready.
+    ESP_LOGI(TAG, "音频已送达(%u KB),去取转写", (unsigned)(bytes / 1024u));
 
-    // The transcript is read with the same JSON reader the work protocol uses.
-    char text[PASSPORT_WORK_QUESTION_MAX];
-    size_t decoded = 0u;
-    const passport_json_status_t parsed =
-        passport_json_string(response, passport_json_len(response), "text", text, sizeof(text),
-                             &decoded);
-    if (parsed != PASSPORT_JSON_OK || text[0] == '\0') {
-        snprintf(s_last, sizeof(s_last), "no transcript in the response");
-        return -3;
-    }
-    if (parsed == PASSPORT_JSON_TRUNCATED) {
-        // A transcript longer than one utterance should produce is reported rather than quietly
-        // cut, because the model would answer a different question than the one that was asked.
-        ESP_LOGW(TAG, "转写被截断:完整长度 %u 字节", (unsigned)decoded);
+    static char text[PASSPORT_WORK_QUESTION_MAX];
+    const int transcribed = fetch_transcript(text, sizeof(text));
+    if (transcribed != 200) {
+        return (transcribed < 0) ? transcribed : -5;
     }
     snprintf(s_last_transcript, sizeof(s_last_transcript), "%s", text);
     snprintf(s_last, sizeof(s_last), "transcript %u bytes from %u KB of audio",
              (unsigned)strlen(text), (unsigned)(bytes / 1024u));
     ESP_LOGI(TAG, "转写:%s", text);
-    return status;
+    return 200;
+}
+
+// Ask the bridge for the transcript of the turn that was just uploaded.
+//
+// A separate request on purpose. After a chunked upload this client cannot read the answer to the
+// upload — header fetch reports a transport failure and a direct read returns nothing, while the
+// server has in fact answered, which was proven by sending the same shape of request from a
+// computer. Rather than fight that, the upload is fire-and-forget and the result is fetched the way
+// this project fetches everything else: a plain GET, which is already proven on this device by the
+// work client. The bridge keeps the most recent transcript; a device has one turn at a time.
+static int fetch_transcript(char *out, size_t out_size)
+{
+    const passport_config_t *cfg = passport_config_current();
+    char url[192];
+    snprintf(url, sizeof(url), "%s/voice/transcript", cfg->bridge_url);
+
+    // Transcription takes a moment on a real bridge, so a few attempts are made rather than one.
+    for (int attempt = 0; attempt < 6; attempt++) {
+        static char body[512];
+        passport_http_result_t result;
+        const passport_http_request_t request = {
+            .url = url,
+            .api_key = (cfg->bridge_token[0] != '\0') ? cfg->bridge_token : NULL,
+            .body = NULL,
+            .timeout_ms = 8000u,
+        };
+        const esp_err_t err = passport_http_request(&request, &result, body, sizeof(body));
+        if (err != ESP_OK) {
+            snprintf(s_last, sizeof(s_last), "transcript fetch failed: %s", esp_err_to_name(err));
+            return -1;
+        }
+        if (result.status != 200) {
+            snprintf(s_last, sizeof(s_last), "transcript fetch returned HTTP %d", result.status);
+            return result.status;
+        }
+
+        bool present = false;
+        const int ready_value = passport_json_int(body, passport_json_len(body), "ready", &present);
+        // A missing "ready" counts as ready. The reader is an integer reader, so a bridge that
+        // answers `"ready": true` — a JSON boolean, which is not an integer — would otherwise be
+        // polled until the attempts ran out while it was in fact answering every time. Being
+        // tolerant here costs nothing and cannot mis-read a bridge that says `"ready": 0` while it
+        // is still working, which is the case that matters.
+        const bool ready = !present || ready_value != 0;
+        if (!ready) {
+            vTaskDelay(pdMS_TO_TICKS(400));
+            continue;
+        }
+        {
+            size_t decoded = 0u;
+            const passport_json_status_t parsed = passport_json_string(
+                body, passport_json_len(body), "text", out, out_size, &decoded);
+            if (parsed == PASSPORT_JSON_OK && out[0] != '\0') {
+                if (parsed == PASSPORT_JSON_TRUNCATED) {
+                    ESP_LOGW(TAG, "转写被截断:完整长度 %u 字节", (unsigned)decoded);
+                }
+                return 200;
+            }
+            // Ready but empty: the bridge heard nothing. Reported as such rather than retried.
+            out[0] = '\0';
+            snprintf(s_last, sizeof(s_last), "bridge returned an empty transcript");
+            return -3;
+        }
+        vTaskDelay(pdMS_TO_TICKS(400));
+    }
+    snprintf(s_last, sizeof(s_last), "the bridge was still transcribing after six attempts");
+    return -4;
 }
 
 // Drive one whole turn. Runs on the speech task, so it may block.
@@ -357,7 +415,29 @@ static void run_turn(void)
             passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_FAILED);
             passport_app_show_error("模型正忙");
             passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_RESET);
+            return;
         }
+
+        // Wait for the answer, then close the turn. Without this the machine stays in THINKING for
+        // ever and the next press is refused as a turn already in flight — which is exactly what
+        // happened the first time a whole spoken turn completed.
+        //
+        // Speaking is not implemented yet, so the turn ends when the reply is on screen, and the
+        // machine is told both facts in order rather than being reset: the rule that the microphone
+        // is closed before anything is spoken holds either way, and when speech synthesis arrives it
+        // slots in between these two events.
+        for (int waited = 0; waited < 120 && passport_chat_busy(); waited++) {
+            vTaskDelay(pdMS_TO_TICKS(250));
+        }
+        if (passport_chat_busy()) {
+            ESP_LOGW(TAG, "模型超过 30 秒未回答,结束这一回合");
+            passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_FAILED);
+            passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_RESET);
+            return;
+        }
+        passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_REPLY);
+        passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_SPEECH_DONE);
+        snprintf(s_last, sizeof(s_last), "turn finished: said \"%s\"", s_last_transcript);
     }
 }
 

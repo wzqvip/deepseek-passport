@@ -57,6 +57,8 @@ LOCK = threading.Lock()
 
 # What the stand-in "hears". A real bridge returns whatever its STT provider produced.
 VOICE_TRANSCRIPT = "which branch should I deploy"
+# The most recent upload, so the transcript can be fetched separately from the upload.
+VOICE_STATE = {"bytes": 0, "text": ""}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -71,6 +73,16 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self):  # noqa: N802 - the name is fixed by the base class
+        if self.path.rstrip("/") == "/voice/transcript":
+            with LOCK:
+                # `ready` is 1 or 0 rather than true/false: the device reads it with an integer
+                # reader, which is what the rest of this protocol uses. A JSON boolean made the
+                # device poll until it gave up while the answer was sitting right there.
+                payload = {"ready": 1 if VOICE_STATE["bytes"] > 0 else 0,
+                           "text": VOICE_STATE["text"]}
+            print(f"GET /voice/transcript -> ready={payload['ready']}", flush=True)
+            self._send(200, json.dumps(payload))
+            return
         if self.path.rstrip("/") == "/work-status":
             document = SCENARIOS[self.scenario]
             print(f"GET /work-status -> {json.dumps(document)}", flush=True)
@@ -120,7 +132,12 @@ class Handler(BaseHTTPRequestHandler):
             seconds = total / 2.0 / 16000.0
             print(f"POST /voice -> {total} bytes of PCM ({seconds:.1f} s at 16 kHz); "
                   f"answering with a fixed transcript", flush=True)
-            self._send(200, json.dumps({"text": VOICE_TRANSCRIPT}))
+            # The device cannot read this answer — see its comment — so it fetches the transcript
+            # separately. Both are provided here so the protocol can be exercised either way.
+            with LOCK:
+                VOICE_STATE["bytes"] = total
+                VOICE_STATE["text"] = VOICE_TRANSCRIPT
+            self._send(202, json.dumps({"status": "accepted", "bytes": total}))
             return
 
         if self.path.rstrip("/") != "/answer":

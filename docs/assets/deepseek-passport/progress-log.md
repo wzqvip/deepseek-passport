@@ -19,6 +19,67 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 28: the voice turn works, end to end
+
+**Milestone:** hold OK, speak, release — and the answer comes back. The audio streams to the bridge,
+the transcript returns, the model is asked, and the reply is on the screen. The reply is not spoken
+yet, and that is the one piece of the voice milestone still missing.
+
+### How the blocking defect was cleared
+
+Session 27 ended with a specific failure: the upload arrived byte-exact and the client could not read
+the answer. The fix is not to fight the client — it is **two requests**. The upload is
+fire-and-forget, and the transcript is fetched the way this project fetches everything else: a plain
+`GET`, which the work client had already proven on this device. Both ends are mine, so the protocol
+was shaped around the transport's weakness rather than the other way round. It is written into
+[the bridge protocol](bridge-protocol.md) with the reason, so a future reader does not "simplify" it
+back into one request.
+
+The first attempt then failed in a way worth recording. The bridge answered `{"ready": true, ...}`
+and the device polled six times and gave up. The device's reader is an **integer** reader — the same
+one the work document uses — so a JSON boolean is not a value it can see. A missing `ready` now counts
+as ready, which is tolerant in the right direction, and the protocol specifies the field as `1` or
+`0`. The lesson is about the seam, not the parser: two components can agree on a protocol while
+disagreeing about a type, and only an end-to-end run finds that.
+
+### Verified on the device
+
+```text
+voice hold -> speak for seven seconds -> voice release
+  the speech task logs (in Chinese): released after 352 chunks, 225280 bytes, rms=366 peak=886
+  the speech task logs: audio delivered (220 KB), fetching the transcript
+  the speech task logs: transcript: which branch should I deploy
+  voice status: state=idle, transcript="which branch should I deploy",
+                last="turn finished: said ..."
+  bridge log:   POST /voice -> 225280 bytes of PCM (7.0 s at 16 kHz)
+                GET  /voice/transcript -> ready=1
+  the model's reply: 1023 bytes in 2796 ms
+```
+
+A second turn was then run to prove the first one really finished: 261 chunks, 167,040 bytes, and
+`turns=2` with the state back to `idle`. Memory afterwards read 48,612 bytes free with a 34,816 largest
+block, so a turn leaves nothing behind.
+
+### The defect this run exposed, which is real and not fixed
+
+**A press does not start recording for about 1.4 seconds.** The turn opens the microphone, updates the
+screen, and connects the socket before the first sample is read, and that is longer than it sounds: a
+short press captures nothing at all, which is exactly what several runs in this session showed before
+the cause was understood. The fix is to start capturing immediately and hold the first fraction of a
+second in a small pre-buffer while the connection is made, then flush it — the memory for that is
+available now, and the design is a few lines. It is not done, so a person pressing and speaking
+immediately loses the beginning of their sentence.
+
+### Also worth stating
+
+The silence gate's default of 400 is **inside** the range this room produced: ambient peaks measured
+366 to 671 across these runs, and speech 886 to 1,821. A gate in the middle of the ambient range would
+discard real speech. It was bypassed with `voice gate 0` for every test here, so the default is
+untested against real use and should be re-derived from a proper measurement rather than guessed
+again.
+
+---
+
 ## 2026-10-14 — Session 27: push-to-talk streams audio, and a memory regression found on the way
 
 **Milestone, partial:** the microphone opens on the press, the speech streams to the bridge while it

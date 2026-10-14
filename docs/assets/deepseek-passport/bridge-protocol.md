@@ -75,7 +75,44 @@ device says so rather than pretending it was delivered.
 **One question takes one answer.** The device refuses a second confirmation for the same question
 until a new document arrives, so a double press cannot answer twice.
 
-## 4. What the device does not do
+## 4. Voice
+
+Push-to-talk uses **two requests**, and that is not an accident of implementation.
+
+### `POST /voice`
+
+The body is the recording, streamed as it is captured: raw little-endian 16-bit mono PCM at 16 kHz,
+declared as `audio/L16;rate=16000;channels=1`, sent with `Transfer-Encoding: chunked` because the
+length is unknown when the request starts. The device does **not** read this response, and the status
+code it would carry is not consulted. It answers `202` with `{"status":"accepted","bytes":N}` for a
+human reading a log.
+
+The transfer framing is written by the device's own code. Its HTTP client declares the body as
+chunked and then writes the caller's bytes unframed, which a server reads as a chunk size followed by
+garbage; see `passport_speech.c`.
+
+### `GET /voice/transcript`
+
+Returns the transcript of the most recent upload:
+
+```json
+{"ready": 1, "text": "which branch should I deploy"}
+```
+
+`ready` is **an integer, 1 or 0**, and a missing `ready` counts as ready. The device's reader is an
+integer reader — the same one the work protocol uses — so a bridge that answers `"ready": true` is
+polled until the attempts run out while its answer sits there unread. That is exactly what happened
+the first time, and it is why the field is specified as a number.
+
+`ready: 0` means still working; the device retries every 400 ms, six times, then gives up and reports
+that the bridge was still transcribing. An empty `text` with `ready: 1` means the audio held no
+speech, and the device says so rather than asking the model about nothing.
+
+The recording's own success is judged **here**, not by the upload's response: a failed upload shows up
+as a bridge that never becomes ready. That is deliberate, because the upload's response cannot be read
+on this client at all.
+
+## 5. What the device does not do
 
 - It does not stream. Polling every five seconds is the whole mechanism; a session that changes
   faster than that is not what this is for.
