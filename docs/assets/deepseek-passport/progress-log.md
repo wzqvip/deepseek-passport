@@ -19,6 +19,58 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 17: the code is on the panel, and it matches the reference
+
+**Milestone:** the setup screen carries a QR code that joins the hotspot, so setup needs no
+typing at all.
+
+### What was built
+
+`qr_render()` builds `WIFI:T:WPA;S:<ssid>;P:<password>;;` from the live access point
+credentials, encodes it, and paints it into an RGB565 buffer taken **from the system heap** —
+a canvas of this size (24,642 bytes) would have to fit LVGL's own pool, which is an order of
+magnitude too small. The image sits in a container with a white background, which is both the
+quiet zone a reader needs and a background a snapshot can compare against. The screen was
+rearranged to give the code 111 pixels of width, with the credentials and the address below it.
+
+The console gained `prov qr`, which prints the live matrix, and `font shot <path> dark`, for
+dark-on-light content.
+
+### Verified on the device
+
+```text
+ui key up long   ->  the app logs "code generated: version 3, 29 modules, scale 3,
+                     111 pixels, payload 40 bytes" (in Chinese, as the firmware logs)
+ui screen        ->  screen setup
+ui names         ->  qr (obj), qr/qr_code (widget), plus the Chinese labels
+prov qr          ->  40-byte payload, version 3, 29 modules, mask 2
+```
+
+Then the decisive comparison: the 29x29 matrix read back from the device, built from the real
+access point name and password, was compared against the Python reference for the same
+payload — **0 of 841 modules differ**.
+
+### A crash, found by pressing the button
+
+Holding UP built the screen and the device restarted. The code is encoded inside the key
+handler, which runs on the input task, and that task had a 4096-byte stack; the encoder needs
+about six kilobytes between its working copy and the builder's module map. The task is now
+sized for what a key press can do, with the reason recorded beside the setting.
+
+The symptom was misleading in a way worth remembering: the access point appeared to have
+switched itself off, because the restart cleared the provisioning state. The first reading of
+that evidence was "the button does nothing", not "the device rebooted".
+
+### Not verified
+
+The pixels on the panel. `font shot qr dark` could not allocate its own 24,642-byte snapshot
+buffer while the code already occupied that much, so the rendering is unverified visually —
+the matrix above proves the *content*, not that a camera would see it. Whether a phone can
+scan it is the user check this milestone hands over, alongside the captive portal check from
+the previous one.
+
+---
+
 ## 2026-10-14 — Session 16: a QR encoder, verified against an independent implementation
 
 **Milestone:** the encoder exists and its symbols are proven correct module by module. It is

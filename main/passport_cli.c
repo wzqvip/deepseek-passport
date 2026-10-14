@@ -37,6 +37,7 @@
 #include "passport_utf8.h"
 #include "passport_portal.h"
 #include "passport_provision.h"
+#include "passport_qr.h"
 #include "passport_wifi.h"
 
 #define CLI_NAME_MAX 96
@@ -771,14 +772,25 @@ static int cmd_llm(int argc, char **argv)
 #define SCREEN_RGB565 0x101828
 #define ACCENT_RGB565 0x4D6BFE
 
+// A rough luma for RGB565, used by the snapshot's dark mode. Light text on a dark panel and
+// dark modules on a light quiet zone need opposite definitions of "ink", so the caller picks.
+static bool pixel_is_dark(uint16_t px)
+{
+    const unsigned r = (px >> 11) & 0x1Fu;
+    const unsigned g = (px >> 5) & 0x3Fu;
+    const unsigned b = px & 0x1Fu;
+    return (r * 3u + g * 6u + b * 3u) < 282u;   // half of the maximum weighted sum
+}
+
 static int cmd_font(int argc, char **argv)
 {
     if (argc < 2 || (strcmp(argv[1], "probe") != 0 && strcmp(argv[1], "shot") != 0 &&
                      strcmp(argv[1], "check") != 0)) {
-        printf("usage: font <probe|check|shot [path]>\n");
+        printf("usage: font <probe|check|shot [path] [dark]>\n");
         printf("  probe        report coverage for a fixed Chinese sample and show it\n");
         printf("  check        report coverage for the text actually on the display\n");
         printf("  shot [path]  render an object's pixels as ASCII art (default chat)\n");
+        printf("               add \"dark\" for dark-on-light content such as the setup code\n");
         return 1;
     }
 
@@ -874,13 +886,16 @@ static int cmd_font(int argc, char **argv)
 
     const uint16_t background = lv_color_to_u16(lv_color_hex(PANEL_RGB565));
     const uint16_t screen_bg = lv_color_to_u16(lv_color_hex(SCREEN_RGB565));
+    const bool dark_ink = (argc > 3 && strcmp(argv[3], "dark") == 0);
 
     // Ink is anything that is not one of the two dark backgrounds. Colours are compared
     // by exclusion rather than by matching the text colour, so this works on the setup
-    // screen as well, where the text is partly the accent colour.
-    #define IS_INK(px) ((px) != background && (px) != screen_bg)
+    // screen as well, where the text is partly the accent colour. In dark mode the test is
+    // inverted, which is what makes a black-on-white symbol legible here.
+    #define IS_INK(px) (dark_ink ? pixel_is_dark(px) : ((px) != background && (px) != screen_bg))
 
-    printf("font shot: %s, %ux%u RGB565, stride %u, %u B from the system heap\n", target_path,
+    printf("font shot: %s,%s %ux%u RGB565, stride %u, %u B from the system heap\n", target_path,
+           dark_ink ? " dark ink," : "",
            (unsigned)width, (unsigned)height, (unsigned)stride, (unsigned)data_size);
 
     for (uint32_t y = 0u; y < height; y++) {
@@ -912,10 +927,11 @@ static int cmd_font(int argc, char **argv)
 static int cmd_prov(int argc, char **argv)
 {
     if (argc < 2) {
-        printf("usage: prov <status|start|stop|page [route]|form <k=v&k=v>>\n");
+        printf("usage: prov <status|start|stop|page [route]|qr|form <k=v&k=v>>\n");
         printf("  status        whether the setup access point is up, and its name\n");
         printf("  start / stop  raise or drop the access point and its web console\n");
         printf("  page [route]  print what a request would return: root, status, or config\n");
+        printf("  qr            print the module matrix of the code shown on the panel\n");
         printf("  form <k=v..>  apply a submission exactly as a POST to /save would\n");
         return 1;
     }
@@ -959,6 +975,31 @@ static int cmd_prov(int argc, char **argv)
         }
         printf("prov page: route=%s, %d bytes\n", passport_portal_route_name(route), written);
         printf("%s\n", page);
+        return 0;
+    }
+
+    if (strcmp(sub, "qr") == 0) {
+        // Print the matrix the panel is showing, so the code on the glass can be compared
+        // against an independent implementation of the same payload. The payload text
+        // itself is not printed: it contains the hotspot password, and the matrix is
+        // already displayed on the device by design.
+        char payload[192];
+        snprintf(payload, sizeof(payload), "WIFI:T:WPA;S:%s;P:%s;;",
+                 passport_provision_ssid(), passport_provision_password());
+        passport_qr_t code;
+        if (!passport_qr_encode(payload, &code)) {
+            printf("prov qr: payload does not fit (%u bytes)\n", (unsigned)strlen(payload));
+            return 1;
+        }
+        printf("prov qr: %u-byte payload, version %u, %u modules, mask %u\n",
+               (unsigned)strlen(payload), code.version, (unsigned)code.size, code.mask);
+        for (int y = -2; y < (int)code.size + 2; y++) {
+            for (int x = -2; x < (int)code.size + 2; x++) {
+                const bool inside = (x >= 0 && y >= 0 && x < (int)code.size && y < (int)code.size);
+                putchar((inside && code.modules[y][x] != 0u) ? '#' : '.');
+            }
+            putchar('\n');
+        }
         return 0;
     }
 

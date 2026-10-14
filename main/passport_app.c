@@ -19,6 +19,7 @@
 
 #include "bsp_battery.h"
 #include "bsp_display.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -29,6 +30,7 @@
 #include "passport_fonts.h"
 #include "passport_pet.h"
 #include "passport_provision.h"
+#include "passport_qr.h"
 #include "passport_utf8.h"
 #include "passport_wifi.h"
 
@@ -177,14 +179,92 @@ static void build_home(void)
 
 // --- setup screen -----------------------------------------------------------
 
+// The code carries the hotspot's own credentials, so joining needs no typing. Size is
+// chosen for a phone camera: the panel is 240 pixels wide, and three pixels per module
+// plus the four-module quiet zone on each side is about as large as this screen allows.
+#define QR_TARGET_SIDE 128
+#define QR_QUIET_ZONE  4
+
+static lv_image_dsc_t s_qr_dsc;
+static uint16_t *s_qr_pixels;
+static int s_qr_side;
+
+// Build the standard Wi-Fi join payload. The escaping rules for ';', ',' ':' and '\' are
+// not applied: the access point name and password are derived from the MAC, so they never
+// contain those characters. If they ever do, this is the line that must learn to escape.
+static void qr_payload(char *out, size_t out_size)
+{
+    snprintf(out, out_size, "WIFI:T:WPA;S:%s;P:%s;;", passport_provision_ssid(),
+             passport_provision_password());
+}
+
+// Render the code into a pixel buffer. Returns the side length, or 0 on failure.
+static int qr_render(void)
+{
+    char payload[192];
+    qr_payload(payload, sizeof(payload));
+
+    passport_qr_t code;
+    if (!passport_qr_encode(payload, &code)) {
+        ESP_LOGW(TAG, "二维码载荷过长,未生成");
+        return 0;
+    }
+
+    const int modules = (int)code.size + 2 * QR_QUIET_ZONE;
+    int scale = QR_TARGET_SIDE / modules;
+    if (scale < 2) {
+        scale = 2;
+    }
+    const int side = modules * scale;
+
+    // The buffer comes from the system heap. A canvas of this size would have to fit
+    // LVGL's own pool, which is an order of magnitude smaller.
+    if (s_qr_pixels == NULL || s_qr_side != side) {
+        heap_caps_free(s_qr_pixels);
+        s_qr_pixels = heap_caps_malloc((size_t)side * (size_t)side * sizeof(uint16_t),
+                                       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        s_qr_side = side;
+    }
+    if (s_qr_pixels == NULL) {
+        ESP_LOGE(TAG, "二维码像素缓冲分配失败(%d 字节)", side * side * 2);
+        return 0;
+    }
+
+    const uint16_t dark = lv_color_to_u16(lv_color_hex(0x000000));
+    const uint16_t light = lv_color_to_u16(lv_color_hex(0xFFFFFF));
+    for (int y = 0; y < side; y++) {
+        for (int x = 0; x < side; x++) {
+            const int mx = x / scale - QR_QUIET_ZONE;
+            const int my = y / scale - QR_QUIET_ZONE;
+            bool is_dark = false;
+            if (mx >= 0 && my >= 0 && mx < (int)code.size && my < (int)code.size) {
+                is_dark = (code.modules[my][mx] != 0u);
+            }
+            s_qr_pixels[(size_t)y * (size_t)side + (size_t)x] = is_dark ? dark : light;
+        }
+    }
+
+    s_qr_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    s_qr_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+    s_qr_dsc.header.w = (uint32_t)side;
+    s_qr_dsc.header.h = (uint32_t)side;
+    s_qr_dsc.header.stride = (uint32_t)(side * 2);
+    s_qr_dsc.data_size = (uint32_t)(side * side * 2);
+    s_qr_dsc.data = (const uint8_t *)s_qr_pixels;
+
+    ESP_LOGI(TAG, "二维码已生成:版本 %u,%d 模块,缩放 %d,%d 像素,载荷 %u 字节", code.version,
+             (int)code.size, scale, side, (unsigned)strlen(payload));
+    return side;
+}
+
 static void setup_refresh(void)
 {
     if (s_setup_hotspot == NULL) {
         return;
     }
-    lv_label_set_text_fmt(s_setup_hotspot, "%s", passport_provision_ssid());
-    lv_label_set_text_fmt(s_setup_password, "%s", passport_provision_password());
-    lv_label_set_text_fmt(s_setup_address, "%s", passport_provision_address());
+    lv_label_set_text_fmt(s_setup_hotspot, "热点 %s", passport_provision_ssid());
+    lv_label_set_text_fmt(s_setup_password, "密码 %s", passport_provision_password());
+    lv_label_set_text_fmt(s_setup_address, "打开 http://%s/", passport_provision_address());
 }
 
 static void build_setup(void)
@@ -199,25 +279,31 @@ static void build_setup(void)
     lv_obj_t *title = label(s_setup, 10, 6, passport_font_body(), APP_PAPER, "setup_title");
     lv_label_set_text(title, "配网设置");
     lv_label_set_text(label(s_setup, 10, 26, &lv_font_montserrat_14, APP_MUTED, "setup_step"),
-                      "1. 手机连接下面的热点");
+                      "手机扫码,或连接下面的热点");
     plain(s_setup, 0, 44, 240, 2, APP_ACCENT);
 
-    // The two values a person has to read off the panel and type into a phone, so they get
-    // their own rows with a label that says which is which.
-    lv_label_set_text(label(s_setup, 12, 54, &lv_font_montserrat_14, APP_MUTED, "setup_hotspot_label"),
-                      "热点名称");
-    s_setup_hotspot = label(s_setup, 12, 70, passport_font_body(), APP_ACCENT, "hotspot");
+    const int side = qr_render();
+    int y = 52;
+    if (side > 0) {
+        // The code lives in a container with a white background for two reasons: the quiet
+        // zone has to be light for a reader to find the symbol, and a snapshot of a bare
+        // image widget has no background to compare ink against.
+        lv_obj_t *qr_panel = plain(s_setup, (240 - side) / 2, y, side, side, 0xFFFFFF);
+        lv_obj_set_name(qr_panel, "qr");
+        lv_obj_t *img = lv_image_create(qr_panel);
+        lv_image_set_src(img, &s_qr_dsc);
+        lv_obj_set_pos(img, 0, 0);
+        lv_obj_set_name(img, "qr_code");
+        y += side + 8;
+    } else {
+        lv_label_set_text(label(s_setup, 10, y, passport_font_body(), APP_MUTED, "qr_missing"),
+                          "二维码生成失败");
+        y += 32;
+    }
 
-    lv_label_set_text(label(s_setup, 12, 96, &lv_font_montserrat_14, APP_MUTED, "setup_password_label"),
-                      "密码");
-    s_setup_password = label(s_setup, 12, 112, passport_font_body(), APP_PAPER, "password");
-
-    lv_label_set_text(label(s_setup, 12, 142, &lv_font_montserrat_14, APP_MUTED, "setup_address_label"),
-                      "2. 打开浏览器访问");
-    s_setup_address = label(s_setup, 12, 158, passport_font_body(), APP_PAPER, "address");
-
-    lv_label_set_text(label(s_setup, 12, 190, &lv_font_montserrat_14, APP_MUTED, "setup_hint"),
-                      "页面会自动弹出。填好 Wi-Fi 与 API Key 后保存。");
+    s_setup_hotspot = label(s_setup, 10, y, passport_font_body(), APP_ACCENT, "hotspot");
+    s_setup_password = label(s_setup, 10, y + 22, passport_font_body(), APP_PAPER, "password");
+    s_setup_address = label(s_setup, 10, y + 44, passport_font_body(), APP_MUTED, "address");
 
     plain(s_setup, 0, 232, 240, 3, APP_ACCENT);
     lv_label_set_text(label(s_setup, 10, 244, &lv_font_montserrat_14, APP_MUTED, "setup_back"),
@@ -464,6 +550,11 @@ void passport_app_stop(void)
     }
     if (bsp_lvgl_lock(1000)) {
         passport_pet_destroy();
+        // The QR pixels came from the system heap, not from LVGL, so they are freed here
+        // rather than by deleting the widget.
+        heap_caps_free(s_qr_pixels);
+        s_qr_pixels = NULL;
+        s_qr_side = 0;
         if (s_setup != NULL) {
             lv_obj_delete(s_setup);
             s_setup = NULL;

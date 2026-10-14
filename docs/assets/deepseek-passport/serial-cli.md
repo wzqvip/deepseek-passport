@@ -46,7 +46,7 @@ Requires `CONFIG_LV_USE_OBJ_NAME=y` (set in `sdkconfig.defaults`).
 | `reboot` | Restart the device |
 | `audio status\|tone [ms]\|loopback [ms]\|mute-check` | Which subsystem holds the audio path; play a 1 kHz tone; record and play it back with a level reading; prove that a capture is refused while playback holds the path |
 | `net probe <url>` | GET a URL over HTTPS; report the status, the bytes, and the heap measured while the TLS session was open |
-| `prov status\|start\|stop\|page [route]\|form <k=v>` | The setup access point and its web console: raise or drop it, print exactly what a request would return, or apply a submission the way a POST to `/save` would |
+| `prov status\|start\|stop\|page [route]\|qr\|form <k=v>` | The setup access point and its web console: raise or drop it, print exactly what a request would return, print the module matrix of the code shown on the panel, or apply a submission the way a POST to `/save` would |
 | `font probe` \| `font check` \| `font shot [path]` | Glyph coverage for a fixed Chinese sample, for the text actually on the display, or an ASCII rendering of an object's pixels (default `chat`) so rendering can be inspected without a camera. An inactive screen is reachable by name; a whole screen is too large to snapshot, so target a child |
 | `llm probe` \| `llm ask <text>` | POST to the configured endpoint: `probe` sends a minimal completion, where a 401 still proves the transport worked; `ask` sends a question and prints the reply |
 | `wifi status\|scan\|connect [ms]\|disconnect` | Station state and address; list nearby access points, which needs no credentials; associate using the stored credentials; drop the association |
