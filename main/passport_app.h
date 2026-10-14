@@ -2,8 +2,11 @@
 // The Passport application: its own screens, layout, and controls.
 #pragma once
 
+#include <stdbool.h>
+
 #include "bsp_button.h"
 #include "esp_err.h"
+#include "passport_work.h"
 
 // Build the application UI and start its worker task. Takes the LVGL lock itself.
 esp_err_t passport_app_start(void);
@@ -20,6 +23,14 @@ void passport_app_show_error(const char *reason);
 // Switch between the home screen and the setup screen that shows the hotspot credentials.
 void passport_app_show_setup(void);
 void passport_app_show_home(void);
+
+// Work mode. The application owns the view and the screen; the console and the input task are
+// both thin drivers, so a document fed from the console updates exactly what a button press
+// would, and there is one copy of the state rather than two that can disagree.
+void passport_app_show_work(void);
+bool passport_app_work_feed(const char *json);
+passport_work_action_t passport_app_work_press(passport_work_key_t key);
+const passport_work_view_t *passport_app_work_current(void);
 
 // Stop the worker and delete the UI. Called before teardown.
 void passport_app_stop(void);

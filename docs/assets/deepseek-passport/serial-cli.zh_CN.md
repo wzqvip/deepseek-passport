@@ -36,7 +36,7 @@ lv_obj_set_name(s_card, "audio");   /* the card labelled "Audio" */
 | `reboot` | 重启设备 |
 | `audio status\|tone [ms]\|loopback [ms]\|mute-check` | 当前哪个子系统占用音频通路；播放 1 kHz 单音；录一段再放回并给出电平读数；验证播放持有通路期间录音会被拒绝 |
 | `net probe <url>` | 对 URL 发 HTTPS GET；报告状态码、字节数，以及 TLS 会话活跃期间测得的堆内存 |
-| `work feed <json>` \| `work key <up\|down\|ok>` \| `work show` | 工作模式：按桥接服务将来的方式把状态文档交给设备、对着它按一次键、或打印它正在显示的内容。文档是扁平结构，选项用编号字段 |
+| `work feed <json>` \| `work key <up\|down\|ok>` \| `work show` \| `work screen` | 工作模式：按桥接服务将来的方式把状态文档交给设备、对着它按一次键、打印它正在显示的内容、或把工作屏切到最前。文档是扁平结构，选项用编号字段，且**必须是 ASCII**：控制台会弄坏非 ASCII 输入 |
 | `prov status\|start\|stop\|page [route]\|qr\|form <k=v>` | 配网热点与它的 Web 控制台：开启或关闭；打印一次请求会返回的确切内容；打印面板上那个二维码的模块矩阵；或按 POST 到 `/save` 的方式应用一次提交 |
 | `font probe` \| `font check` \| `font shot [path]` | 分别针对固定中文样本、**屏幕上真实显示的文本**给出字形覆盖；或把某个对象的像素渲染成 ASCII 图（默认 `chat`），好在没有摄像头的情况下检查渲染。非活动屏幕可按名字寻址；整屏太大无法快照，请针对子对象 |
 | `llm probe` \| `llm ask <text>` | 向已配置端点 POST：`probe` 发一个最小补全（401 即证明传输通了）；`ask` 发一个问题并打印回答 |

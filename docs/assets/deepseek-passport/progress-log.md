@@ -19,6 +19,64 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 22: work mode on the screen, verified field by field
+
+**Milestone:** work mode is visible and button-driven. A task, its progress, and a question with
+options now appear on the panel, and the buttons move and confirm the selection.
+
+### What was built
+
+A third screen, `work`, whose objects the console can read: `work_task`, `work_state`,
+`work_bar`, `work_percent`, `work_question`, `work_option0` to `work_option3`, and `work_hint`.
+It is reached by holding DOWN, left by holding OK, and **a status document takes the screen over
+from the home screen but not from the setup screen** — someone halfway through provisioning
+should not be thrown out of it by a background update.
+
+Three decisions are visible in the layout:
+
+- **Unknown progress is drawn as absent, not as an empty bar.** A bridge that does not report
+  progress would otherwise make every task look stalled at nothing; the bar is hidden and the
+  number reads `--`.
+- **The selected option is marked and coloured**, which is also how the console can tell which
+  one is chosen.
+- **The view lives in the application, not in the console.** The console and the button task are
+  both thin drivers of one copy of the state, so a document fed over the console updates exactly
+  what a button press would, and the two can never disagree.
+
+### Verified on the device
+
+```text
+work feed {"task":"deploy","state":"waiting","question":"Which branch?",
+           "option0":"main","option1":"develop","selected":0}
+work: state=waiting progress=-1% task="deploy"
+ui screen     -> screen work  240x320  children=13
+ui get work_percent -> text: --            <- unknown, not a stalled zero
+ui get work_option0 -> text: > main
+work key down
+ui get work_option1 -> text: > develop     <- the marker moved on the panel
+work key ok   -> answer -> develop
+```
+
+A document that cannot be parsed was also checked on the device: feeding a mangled one reports
+that the previous view is kept, and `ui get work_task` still reads the earlier task. That is the
+"refuse rather than blank the screen" rule holding on hardware.
+
+### Two findings
+
+**A naming inconsistency of mine.** The option objects were named `option0` while the rest of the
+screen used a `work_` prefix, so the same path could mean different objects depending on which
+screen was in front. Every object on the screen now carries the prefix: console names are unique
+across screens, and `ui get work_task` means one thing.
+
+**Non-ASCII still cannot be typed into the console.** A status document containing a Chinese task
+name was rejected as unparseable: the console's line handling mangles non-ASCII input, which is
+the write-side counterpart of the reading problem recorded earlier. The Chinese *interface* text
+on this screen renders correctly, because it is a source literal; it is documents *typed* at the
+console that cannot carry Chinese. Test documents should be ASCII, and Chinese payloads arrive
+over the network or from speech, not from the console.
+
+---
+
 ## 2026-10-14 — Session 21: work mode's document and button rules, verified on the device
 
 **Milestone:** the device half of work mode exists. The bridge is not written yet, so what is

@@ -33,6 +33,7 @@
 #include "passport_qr.h"
 #include "passport_utf8.h"
 #include "passport_wifi.h"
+#include "passport_work.h"
 
 static const char *TAG = "passport_app";
 
@@ -85,6 +86,7 @@ static lv_obj_t *s_setup_hotspot;
 static lv_obj_t *s_setup_password;
 static lv_obj_t *s_setup_address;
 static bool s_on_setup;
+static bool s_on_work;
 
 // --- small LVGL helpers -----------------------------------------------------
 
@@ -365,7 +367,170 @@ void passport_app_show_home(void)
     }
     lv_screen_load(s_screen);
     s_on_setup = false;
+    s_on_work = false;
     bsp_lvgl_unlock();
+}
+
+// --- work screen ------------------------------------------------------------
+
+static lv_obj_t *s_work;
+static lv_obj_t *s_work_task;
+static lv_obj_t *s_work_state;
+static lv_obj_t *s_work_bar;
+static lv_obj_t *s_work_percent;
+static lv_obj_t *s_work_question;
+static lv_obj_t *s_work_options[PASSPORT_WORK_MAX_OPTIONS];
+static passport_work_view_t s_work_view;
+
+static void build_work(void)
+{
+    s_work = lv_obj_create(NULL);
+    lv_obj_remove_flag(s_work, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(s_work, lv_color_hex(APP_BG), 0);
+    lv_obj_set_style_border_width(s_work, 0, 0);
+    lv_obj_set_style_pad_all(s_work, 0, 0);
+    lv_obj_set_name(s_work, "work");
+
+    lv_label_set_text(label(s_work, 10, 6, passport_font_body(), APP_PAPER, "work_title"),
+                      "工作模式");
+    s_work_state = label(s_work, 130, 8, &lv_font_montserrat_14, APP_ACCENT, "work_state");
+    lv_obj_set_width(s_work_state, 100);
+    lv_obj_set_style_text_align(s_work_state, LV_TEXT_ALIGN_RIGHT, 0);
+    plain(s_work, 0, 28, 240, 2, APP_ACCENT);
+
+    s_work_task = label(s_work, 10, 36, passport_font_body(), APP_PAPER, "work_task");
+    lv_obj_set_width(s_work_task, 220);
+    lv_obj_set_height(s_work_task, 44);
+    lv_label_set_long_mode(s_work_task, LV_LABEL_LONG_WRAP);
+
+    // The bar and its number: the number is separate so the console can read the percentage
+    // without interpreting a widget's value.
+    s_work_bar = lv_bar_create(s_work);
+    lv_obj_set_size(s_work_bar, 180, 12);
+    lv_obj_set_pos(s_work_bar, 10, 86);
+    lv_bar_set_range(s_work_bar, 0, 100);
+    lv_obj_set_style_bg_color(s_work_bar, lv_color_hex(APP_PANEL), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_work_bar, lv_color_hex(APP_ACCENT), LV_PART_INDICATOR);
+    lv_obj_set_name(s_work_bar, "work_bar");
+    s_work_percent = label(s_work, 196, 84, &lv_font_montserrat_14, APP_PAPER, "work_percent");
+
+    s_work_question = label(s_work, 10, 108, passport_font_body(), APP_PAPER, "work_question");
+    lv_obj_set_width(s_work_question, 220);
+    lv_obj_set_height(s_work_question, 44);
+    lv_label_set_long_mode(s_work_question, LV_LABEL_LONG_WRAP);
+
+    // Four option rows. The selected one is drawn in the accent colour with a marker, which is
+    // also how the console can tell which one is chosen. Every object on this screen carries the
+    // "work_" prefix so its console name is unique across screens: two screens sharing a name
+    // like "title" would mean the same path resolves to different objects depending on which
+    // screen happens to be in front.
+    for (int i = 0; i < PASSPORT_WORK_MAX_OPTIONS; i++) {
+        char name[16];
+        snprintf(name, sizeof(name), "work_option%d", i);
+        s_work_options[i] = label(s_work, 10, 158 + 26 * i, passport_font_body(), APP_MUTED, name);
+        lv_obj_set_width(s_work_options[i], 220);
+    }
+
+    plain(s_work, 0, 268, 240, 2, APP_ACCENT);
+    lv_label_set_text(label(s_work, 10, 276, &lv_font_montserrat_14, APP_MUTED, "work_hint"),
+                      "UP/DOWN 选择   OK 确认   长按OK 返回");
+}
+
+// Draw the current view. Called with the LVGL lock held.
+static void work_refresh(void)
+{
+    if (s_work_task == NULL) {
+        return;
+    }
+    lv_label_set_text(s_work_task, (s_work_view.task[0] != '\0') ? s_work_view.task : "-");
+    lv_label_set_text(s_work_state, passport_work_state_name(s_work_view.state));
+
+    if (s_work_view.progress < 0) {
+        // "Unknown" is drawn as absent, not as an empty bar, so a task whose bridge does not
+        // report progress does not look stalled.
+        lv_obj_add_flag(s_work_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(s_work_percent, "--");
+    } else {
+        lv_obj_remove_flag(s_work_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_bar_set_value(s_work_bar, s_work_view.progress, LV_ANIM_OFF);
+        lv_label_set_text_fmt(s_work_percent, "%d%%", s_work_view.progress);
+    }
+
+    lv_label_set_text(s_work_question, (s_work_view.question[0] != '\0') ? s_work_view.question : "");
+    lv_obj_add_flag(s_work_question, (s_work_view.question[0] != '\0') ? 0 : LV_OBJ_FLAG_HIDDEN);
+    if (s_work_view.question[0] != '\0') {
+        lv_obj_remove_flag(s_work_question, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    for (int i = 0; i < PASSPORT_WORK_MAX_OPTIONS; i++) {
+        if (i >= s_work_view.option_count) {
+            lv_obj_add_flag(s_work_options[i], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        lv_obj_remove_flag(s_work_options[i], LV_OBJ_FLAG_HIDDEN);
+        const bool chosen = (i == s_work_view.selected);
+        lv_label_set_text_fmt(s_work_options[i], "%s %s", chosen ? ">" : " ",
+                              s_work_view.options[i]);
+        lv_obj_set_style_text_color(s_work_options[i],
+                                    lv_color_hex(chosen ? APP_ACCENT : APP_MUTED), 0);
+    }
+}
+
+void passport_app_show_work(void)
+{
+    if (!bsp_lvgl_lock(1000)) {
+        return;
+    }
+    if (s_work == NULL) {
+        build_work();
+    }
+    work_refresh();
+    lv_screen_load(s_work);
+    s_on_work = true;
+    bsp_lvgl_unlock();
+}
+
+bool passport_app_work_feed(const char *json)
+{
+    passport_work_view_t parsed;
+    if (!passport_work_parse(json, &parsed)) {
+        return false;
+    }
+
+    if (!bsp_lvgl_lock(1000)) {
+        return false;
+    }
+    s_work_view = parsed;
+    if (s_work == NULL) {
+        build_work();
+    }
+    // A document that arrives while the home screen is showing takes it over, the way a
+    // notification would. It does not interrupt the setup screen: someone mid-provisioning
+    // should not be thrown out of it by a background update.
+    if (!s_on_setup) {
+        lv_screen_load(s_work);
+        s_on_work = true;
+    }
+    work_refresh();
+    bsp_lvgl_unlock();
+    return true;
+}
+
+passport_work_action_t passport_app_work_press(passport_work_key_t key)
+{
+    const passport_work_action_t action = passport_work_key(&s_work_view, key);
+    if (action == PASSPORT_WORK_ACT_REDRAW) {
+        if (bsp_lvgl_lock(500)) {
+            work_refresh();
+            bsp_lvgl_unlock();
+        }
+    }
+    return action;
+}
+
+const passport_work_view_t *passport_app_work_current(void)
+{
+    return &s_work_view;
 }
 
 // --- worker -----------------------------------------------------------------
@@ -483,6 +648,37 @@ void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
         return;
     }
 
+    // On the work screen the buttons drive the selection. UP and DOWN move it, OK answers, and
+    // a long OK goes back. Releasing the lock first keeps the press path from holding the lock
+    // while the redraw happens inside the app's own helper.
+    if (s_on_work) {
+        bsp_lvgl_unlock();
+        if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
+            passport_app_show_home();
+            return;
+        }
+        if (ev != BSP_BTN_CLICK) {
+            return;
+        }
+        passport_work_key_t key = PASSPORT_WORK_KEY_NONE;
+        if (btn == BSP_BTN_UP) {
+            key = PASSPORT_WORK_KEY_UP;
+        } else if (btn == BSP_BTN_DOWN) {
+            key = PASSPORT_WORK_KEY_DOWN;
+        } else if (btn == BSP_BTN_OK) {
+            key = PASSPORT_WORK_KEY_CONFIRM;
+        }
+        if (key == PASSPORT_WORK_KEY_NONE) {
+            return;
+        }
+        if (passport_app_work_press(key) == PASSPORT_WORK_ACT_SEND_ANSWER) {
+            // Sending it to the bridge is the next milestone; what the device decided is
+            // logged now so the behaviour is observable.
+            ESP_LOGI(TAG, "工作模式:回答 %s", s_work_view.options[s_work_view.selected]);
+        }
+        return;
+    }
+
     if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
         // Local standby preview. Real power management is a later milestone; this
         // only shows the sleeping expression and states it on screen.
@@ -499,6 +695,14 @@ void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
             passport_provision_start();
         }
         passport_app_show_setup();
+        return;
+    }
+
+    if (btn == BSP_BTN_DOWN && ev == BSP_BTN_LONG) {
+        // Reach work mode by hand. The bridge will raise it on its own later; this is how a
+        // person asks for it, and how the console's feed is reached without a bridge at all.
+        bsp_lvgl_unlock();
+        passport_app_show_work();
         return;
     }
 
@@ -594,6 +798,19 @@ void passport_app_stop(void)
         heap_caps_free(s_qr_pixels);
         s_qr_pixels = NULL;
         s_qr_side = 0;
+        if (s_work != NULL) {
+            lv_obj_delete(s_work);
+            s_work = NULL;
+            s_work_task = NULL;
+            s_work_state = NULL;
+            s_work_bar = NULL;
+            s_work_percent = NULL;
+            s_work_question = NULL;
+            for (int i = 0; i < PASSPORT_WORK_MAX_OPTIONS; i++) {
+                s_work_options[i] = NULL;
+            }
+            s_on_work = false;
+        }
         if (s_setup != NULL) {
             lv_obj_delete(s_setup);
             s_setup = NULL;

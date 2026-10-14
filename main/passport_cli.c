@@ -925,24 +925,22 @@ static int cmd_font(int argc, char **argv)
     return 0;
 }
 
-// Work mode over the console. The view is static so a document can be fed and then navigated
-// across separate commands, which is how the interaction rules are checked on the device
-// rather than only in the host test.
-static passport_work_view_t s_work_view;
-static bool s_work_loaded;
-
-static void print_work_view(void)
+// Work mode over the console. The view itself lives in the application, so a document fed here
+// updates exactly what a button press would and there is only one copy of the state.
+static void print_work_view(const passport_work_view_t *view)
 {
-    printf("work: state=%s progress=%d%% task=\"%s\"\n", passport_work_state_name(s_work_view.state),
-           s_work_view.progress, s_work_view.task);
-    if (s_work_view.option_count > 0) {
-        printf("work: question=\"%s\"\n", s_work_view.question);
-        for (int i = 0; i < s_work_view.option_count; i++) {
-            printf("  %s option%d: %s\n", (i == s_work_view.selected) ? ">" : " ", i,
-                   s_work_view.options[i]);
+    if (view == NULL) {
+        return;
+    }
+    printf("work: state=%s progress=%d%% task=\"%s\"\n", passport_work_state_name(view->state),
+           view->progress, view->task);
+    if (view->option_count > 0) {
+        printf("work: question=\"%s\"\n", view->question);
+        for (int i = 0; i < view->option_count; i++) {
+            printf("  %s option%d: %s\n", (i == view->selected) ? ">" : " ", i, view->options[i]);
         }
     }
-    if (s_work_view.answered) {
+    if (view->answered) {
         printf("work: this question has already been answered\n");
     }
 }
@@ -950,10 +948,11 @@ static void print_work_view(void)
 static int cmd_work(int argc, char **argv)
 {
     if (argc < 2) {
-        printf("usage: work <feed <json>|key <up|down|ok>|show>\n");
+        printf("usage: work <feed <json>|key <up|down|ok>|show|screen>\n");
         printf("  feed <json>  hand the device a status document, as the bridge would\n");
         printf("  key <k>      press a button against the current document\n");
         printf("  show         print what the device is showing for work\n");
+        printf("  screen       bring the work screen to the front\n");
         return 1;
     }
 
@@ -981,24 +980,19 @@ static int cmd_work(int argc, char **argv)
             used += n;
             document[used] = '\0';
         }
-        if (!passport_work_parse(document, &s_work_view)) {
+        if (!passport_app_work_feed(document)) {
             printf("work feed: the document names neither a task nor a question;"
                    " the previous view is kept\n");
             return 1;
         }
-        s_work_loaded = true;
-        print_work_view();
-        if (passport_work_awaiting_answer(&s_work_view)) {
+        print_work_view(passport_app_work_current());
+        if (passport_work_awaiting_answer(passport_app_work_current())) {
             printf("work: a question is waiting; use \"work key down\" then \"work key ok\"\n");
         }
         return 0;
     }
 
     if (strcmp(argv[1], "key") == 0) {
-        if (!s_work_loaded) {
-            printf("work key: feed a document first\n");
-            return 1;
-        }
         if (argc < 3) {
             printf("usage: work key <up|down|ok>\n");
             return 1;
@@ -1015,34 +1009,37 @@ static int cmd_work(int argc, char **argv)
             return 1;
         }
 
-        const passport_work_action_t action = passport_work_key(&s_work_view, key);
+        const passport_work_view_t *view = passport_app_work_current();
+        const passport_work_action_t action = passport_app_work_press(key);
         switch (action) {
         case PASSPORT_WORK_ACT_REDRAW:
             printf("work key: selection moved\n");
             break;
         case PASSPORT_WORK_ACT_SEND_ANSWER:
             // The bridge is not wired yet, so the answer is printed rather than posted. The
-            // exact bytes are what the bridge will receive.
-            printf("work key: answer -> %s\n", s_work_view.options[s_work_view.selected]);
+            // exact text is what the bridge will receive.
+            printf("work key: answer -> %s\n", view->options[view->selected]);
             break;
         case PASSPORT_WORK_ACT_CHIME:
             printf("work key: chime\n");
             break;
         default:
             printf("work key: nothing to do in state %s\n",
-                   passport_work_state_name(s_work_view.state));
+                   passport_work_state_name(view->state));
             break;
         }
-        print_work_view();
+        print_work_view(view);
         return 0;
     }
 
     if (strcmp(argv[1], "show") == 0) {
-        if (!s_work_loaded) {
-            printf("work: no document has been fed\n");
-            return 1;
-        }
-        print_work_view();
+        print_work_view(passport_app_work_current());
+        return 0;
+    }
+
+    if (strcmp(argv[1], "screen") == 0) {
+        passport_app_show_work();
+        printf("work: the work screen is in front\n");
         return 0;
     }
 
