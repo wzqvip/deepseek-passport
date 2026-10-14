@@ -44,6 +44,7 @@ Requires `CONFIG_LV_USE_OBJ_NAME=y` (set in `sdkconfig.defaults`).
 | `ui key <up\|down\|ok> <press\|click\|double\|long\|release>` | Inject a button event |
 | `ui screen` | Active screen name, size, and child count |
 | `reboot` | Restart the device |
+| `audio status\|tone [ms]\|loopback [ms]\|mute-check` | Which subsystem holds the audio path; play a 1 kHz tone; record and play it back with a level reading; prove that a capture is refused while playback holds the path |
 | `help` | The ESP-IDF console's own command list |
 
 ## Two contracts worth knowing before scripting against it

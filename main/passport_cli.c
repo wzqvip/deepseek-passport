@@ -26,6 +26,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "lvgl.h"
+#include "passport_audio.h"
 
 #define CLI_NAME_MAX 96
 #define CLI_TAP_ANCESTOR_MAX 6
@@ -423,6 +424,91 @@ static int cmd_reboot(int argc, char **argv)
     return 0;  // not reached
 }
 
+static int cmd_audio(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("usage: audio <status|tone [ms]|loopback [ms]|mute-check>\n");
+        printf("  status           which subsystem holds the audio path\n");
+        printf("  tone [ms]        play a 1 kHz tone (default 300 ms)\n");
+        printf("  loopback [ms]    record, then play it back (default 1000 ms, max 2000)\n");
+        printf("  mute-check       prove a capture is refused while playback holds the path\n");
+        return 1;
+    }
+
+    if (strcmp(argv[1], "status") == 0) {
+        const passport_audio_owner_t owner = passport_audio_owner();
+        printf("audio owner : %s\n", passport_audio_owner_name(owner));
+        printf("microphone  : %s\n", passport_audio_arbiter_mic_allowed(owner)
+                                        ? "allowed"
+                                        : "closed (playback holds the path)");
+        return 0;
+    }
+
+    if (strcmp(argv[1], "tone") == 0) {
+        int ms = (argc > 2) ? atoi(argv[2]) : 300;
+        if (ms <= 0) { ms = 300; }
+        if (ms > 3000) { ms = 3000; }
+        const size_t samples = (size_t)ms * 16u;   // 16 samples per ms at 16 kHz
+        int16_t *buf = malloc(samples * sizeof(int16_t));
+        if (buf == NULL) {
+            printf("audio tone: %u B allocation failed\n", (unsigned)(samples * sizeof(int16_t)));
+            return 1;
+        }
+        passport_audio_fill_tone(buf, samples);
+        const esp_err_t err = passport_audio_play(buf, samples);
+        free(buf);
+        printf("audio tone: %d ms -> %s\n", ms, esp_err_to_name(err));
+        return (err == ESP_OK) ? 0 : 1;
+    }
+
+    if (strcmp(argv[1], "loopback") == 0) {
+        int ms = (argc > 2) ? atoi(argv[2]) : 1000;
+        if (ms <= 0) { ms = 1000; }
+        if (ms > 2000) { ms = 2000; }
+        const size_t samples = (size_t)ms * 16u;
+        int16_t *buf = malloc(samples * sizeof(int16_t));
+        if (buf == NULL) {
+            printf("audio loopback: %u B allocation failed\n", (unsigned)(samples * sizeof(int16_t)));
+            return 1;
+        }
+
+        passport_audio_level_t level = { 0u, 0u, 0u };
+        printf("audio loopback: recording %d ms (%u samples, %u B)\n", ms,
+               (unsigned)samples, (unsigned)(samples * sizeof(int16_t)));
+        esp_err_t err = passport_audio_capture(buf, samples, &level);
+        printf("  captured %u samples  rms=%u peak=%u\n",
+               (unsigned)level.samples, level.rms, level.peak);
+        if (err == ESP_OK && level.peak == 0u) {
+            printf("  the microphone heard nothing: silence, or a dead input path\n");
+        }
+        if (err == ESP_OK) {
+            printf("  playing back; a capture during playback is refused\n");
+            err = passport_audio_play(buf, samples);
+            printf("  playback %s (owner now %s)\n",
+                   (err == ESP_OK) ? "done" : esp_err_to_name(err),
+                   passport_audio_owner_name(passport_audio_owner()));
+        }
+        free(buf);
+        printf("audio loopback: %s\n", (err == ESP_OK) ? "ok" : esp_err_to_name(err));
+        return (err == ESP_OK) ? 0 : 1;
+    }
+
+    if (strcmp(argv[1], "mute-check") == 0) {
+        bool refused = false;
+        const esp_err_t err = passport_audio_verify_mute(&refused);
+        if (err != ESP_OK) {
+            printf("audio mute-check: could not take the audio path: %s\n", esp_err_to_name(err));
+            return 1;
+        }
+        printf("audio mute-check: capture refused while playback held the path: %s\n",
+               refused ? "yes" : "NO - the mute rule is broken");
+        return refused ? 0 : 1;
+    }
+
+    printf("audio: unknown subcommand \"%s\"\n", argv[1]);
+    return 1;
+}
+
 static int cmd_ui(int argc, char **argv)
 {
     if (argc < 2) {
@@ -497,6 +583,7 @@ esp_err_t passport_cli_start(void)
     register_command("ver", "Print the application and ESP-IDF build identity", &cmd_ver);
     register_command("app", "Print uptime, battery, keypad voltage, and memory", &cmd_app);
     register_command("mem", "Print heap, largest free block, and the LVGL pool", &cmd_mem);
+    register_command("audio", "Audio path: status | tone [ms] | loopback [ms] | mute-check", &cmd_audio);
     register_command("ui", "Screen inspection: tree | names | get | tap | key | screen", &cmd_ui);
     register_command("reboot", "Restart the device", &cmd_reboot);
     esp_console_register_help_command();

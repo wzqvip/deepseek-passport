@@ -1,8 +1,11 @@
 idf_component_register(
     SRCS "main.c"
          "passport_app.c"
+         "passport_audio.c"
+         "passport_audio_arbiter.c"
          "passport_pet.c"
          "passport_cli.c"
+         "passport_metrics_math.c"
          "assets/passport_pet_assets.c"
          # Kept for the repository's host gate, which compiles these two sources
          # directly (tests/test_demo_navigation.c, tests/test_ui_pixel_math.c).

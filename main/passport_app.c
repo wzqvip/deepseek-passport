@@ -23,6 +23,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#include "passport_audio.h"
 #include "passport_pet.h"
 
 static const char *TAG = "passport_app";
@@ -198,6 +199,16 @@ esp_err_t passport_app_start(void)
         ESP_LOGE(TAG, "应用工作线程创建失败;界面仍可用,但电量不刷新");
         return ESP_ERR_NO_MEM;
     }
+
+    // Open the codec and discard its settling window now, so the first voice turn
+    // does not mistake a boot transient for loud input. A failure is not fatal: the
+    // device simply keeps whatever audio behaviour it had.
+    if (passport_audio_warmup() != ESP_OK) {
+        ESP_LOGW(TAG, "音频预热失败;首次录音可能包含编解码器起振瞬态");
+    } else {
+        ESP_LOGI(TAG, "音频通路已预热(16kHz/16bit/单声道)");
+    }
+
     ESP_LOGI(TAG, "Passport 应用已启动");
     return ESP_OK;
 }

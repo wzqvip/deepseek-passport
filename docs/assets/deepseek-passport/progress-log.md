@@ -19,6 +19,55 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 5: the audio path, and two findings from measuring it
+
+**Milestone:** the microphone and speaker path is in the application and verified;
+the audio half of the M1 exit criteria is done.
+
+### What was built
+
+`passport_audio_arbiter` is the ownership state machine for the audio path, as pure
+logic with a host test: capture and playback cannot both hold the path, only the
+current holder may release it, and the microphone is not permitted while playback
+owns it. That is where the "microphone muted during playback" requirement now
+lives — as enforced code rather than a convention a later feature could forget.
+
+`passport_audio` is the codec side: 16 kHz 16-bit mono capture and playback in
+bounded chunks, a peak-hold level measured on the same data (reusing the
+host-tested PCM helpers), a 1 kHz tone generator for a speaker check, and a warm-up
+path.
+
+The console gained `audio status`, `audio tone`, `audio loopback`, and
+`audio mute-check`.
+
+### Two findings, both from measuring rather than assuming
+
+**The codec's first samples are not audio.** The first capture after boot reported
+rms 31,106 and peak 32,768 — a railed, full-scale "input" in a quiet room. A 100 ms
+per-open guard reduced it to rms 7,627 / peak 9,087, still 76x the steady state of
+rms ~100 / peak ~237. The application now warms the codec up once at start with a
+500 ms discard, and the first user-facing capture reads rms 148 / peak 286. Without
+this, every voice turn after boot would have looked like someone shouting — a
+plausible cause of a future "the transcriber hears nothing useful" bug.
+
+**The mute rule is provable on the device, not only in a test.** `audio mute-check`
+takes the path for playback, attempts a capture, and reports whether it was refused.
+The host test covers the same rule exhaustively; this is the on-hardware counterpart.
+
+### Verified on the device
+
+```text
+audio status         owner free, microphone allowed
+audio loopback 1000  captured 16000 samples rms=148 peak=286
+                     playback done (owner now free)
+audio mute-check     capture refused while playback held the path: yes
+audio tone 300       ESP_OK
+app                  free=217,844 B min=185,144 B largest=114,688 B
+                     lvgl free=14,084 biggest=13,996 frag=1% max_used=9,264
+```
+
+---
+
 ## 2026-10-14 — Session 4: the application replaces the demo menu
 
 **Milestone:** the application body has begun; its first screen is the pet home
