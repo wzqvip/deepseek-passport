@@ -19,6 +19,75 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 4: the application replaces the demo menu
+
+**Milestone:** the application body has begun; its first screen is the pet home
+screen.
+
+### What was done
+
+The upstream hardware-test menu is gone from the build. `main/main.c` is now the
+Passport entry point: BSP initialization, the deep-sleep key-guard hand-off from the
+previous session, an input queue whose consumer drives the application, the serial
+console, and one call to start the application.
+
+The first screen is designed for this product rather than inherited: a status strip
+with the battery top-right, an accent rule, a conversation panel with an accent
+edge, the pet sprite, a line naming the current expression, a ground line, and a
+footer hint. The demo's cards, clouds, grass, and `ui_pixel` shell are **deleted**,
+not recolored.
+
+The pet (`passport_pet.c`) is a sprite widget driven by a 90 ms LVGL timer: a
+two-frame breathing bob with an occasional blink while idle, a raised tail while
+working, a spout while speaking, and a small vertical reaction for happy and
+distressed. Animation swaps the image source on one widget, so the resident object
+count never changes. Every mood is reachable with `UP`/`DOWN`, which is how a host
+verifies the whole sprite set over the console.
+
+Battery reads happen in the application's worker task, not in the LVGL timer: the
+gauge is on I2C, and blocking I/O inside the rendering task is exactly what the
+hardware guide warns against. The worker takes `bsp_lvgl_lock()` to update the label.
+
+### Verified on the device
+
+Boot log: two I2C devices found, display and LVGL up, the application started, the
+console ready, and a readiness line reporting Display=1 Button=1 Audio=1 Battery=1
+App=1. The asset line reports 11 frames at 64x64, a first frame of 12,288 B, and
+135,168 B of flash — matching the predicted RGB565A8 cost, so the sprites are
+genuinely in the image rather than merely compiled.
+
+Screen read back over the console, which is the correspondence working as intended:
+
+```text
+passport            obj      (active screen)
+title               label    "PASSPORT"
+battery             label    "97%"
+obj_3/bubble        label    "Hi. Press OK."
+pet                 widget
+mood                label    "idle"
+hint                label    "OK: react    hold OK: standby"
+```
+
+Driven with injected keys: `ui key down click` twice took `mood` from "idle" to
+"curious" to "listening", and `ui key ok click` produced "happy", each read back
+with `ui get mood`.
+
+### Measurements
+
+| Reading | Baseline demo | This application |
+| --- | --- | --- |
+| Free heap | 142,600 B | **211,884 B** |
+| Largest free block | 112 KiB | 112 KiB |
+| LVGL pool high-water mark | 18,452 B | **9,380 B** |
+| LVGL pool free | 4,008 B | **14,100 B** |
+| Application image | 0x1a39c0 | **0xd0d10 (854 KB)** |
+
+The redesigned UI uses about half the LVGL pool of the demo it replaced, and
+removing the demo pages released the unused NimBLE and Wi-Fi stacks from the image,
+which is why the binary shrank by roughly half while gaining 135 KB of sprites.
+
+---
+
 ## 2026-10-14 — Session 3: device identified, toolchain gap, M1 started
 
 **Milestone:** `M1` in progress.

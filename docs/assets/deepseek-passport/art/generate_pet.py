@@ -422,7 +422,7 @@ def emit_c(out_dir: Path, scale: int, version: str = "1.0.0") -> None:
 typedef enum {{
 '''
     for index, (name, _rows) in enumerate(frames):
-        header += f"    PASSPORT_PET_{name.upper()} = {index},\n"
+        header += f"    PASSPORT_PET_FRAME_{name.upper()} = {index},\n"
     header += f'''}} passport_pet_frame_t;
 
 extern const lv_image_dsc_t *const passport_pet_frames[PASSPORT_PET_FRAME_COUNT];
@@ -454,12 +454,12 @@ const lv_image_dsc_t passport_pet_{name} = {{
 '''
     source += "const lv_image_dsc_t *const passport_pet_frames[PASSPORT_PET_FRAME_COUNT] = {\n"
     for name, _rows in frames:
-        source += f"    [PASSPORT_PET_{name.upper()}] = &passport_pet_{name},\n"
+        source += f"    [PASSPORT_PET_FRAME_{name.upper()}] = &passport_pet_{name},\n"
     source += "};\n\n"
 
     source += "const char *const passport_pet_frame_names[PASSPORT_PET_FRAME_COUNT] = {\n"
     for name, _rows in frames:
-        source += f'    [PASSPORT_PET_{name.upper()}] = "{name}",\n'
+        source += f'    [PASSPORT_PET_FRAME_{name.upper()}] = "{name}",\n'
     source += "};\n"
 
     (out_dir / "passport_pet_assets.h").write_text(header, encoding="utf-8")
