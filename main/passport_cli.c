@@ -39,6 +39,7 @@
 #include "passport_provision.h"
 #include "passport_qr.h"
 #include "passport_work.h"
+#include "passport_work_client.h"
 #include "passport_wifi.h"
 
 #define CLI_NAME_MAX 96
@@ -948,11 +949,14 @@ static void print_work_view(const passport_work_view_t *view)
 static int cmd_work(int argc, char **argv)
 {
     if (argc < 2) {
-        printf("usage: work <feed <json>|key <up|down|ok>|show|screen>\n");
+        printf("usage: work <feed <json>|key <up|down|ok>|show|screen|poll|answer|client>\n");
         printf("  feed <json>  hand the device a status document, as the bridge would\n");
         printf("  key <k>      press a button against the current document\n");
         printf("  show         print what the device is showing for work\n");
         printf("  screen       bring the work screen to the front\n");
+        printf("  poll         fetch from the configured bridge now\n");
+        printf("  answer       send the chosen option to the bridge\n");
+        printf("  client       what the bridge client has been doing\n");
         return 1;
     }
 
@@ -1040,6 +1044,35 @@ static int cmd_work(int argc, char **argv)
     if (strcmp(argv[1], "screen") == 0) {
         passport_app_show_work();
         printf("work: the work screen is in front\n");
+        return 0;
+    }
+
+    if (strcmp(argv[1], "poll") == 0) {
+        passport_work_client_poll_now();
+        // The fetch happens on the client's task, so this reports the request rather than the
+        // result; "work client" shows what came back.
+        printf("work poll: asked the client for an immediate fetch\n");
+        return 0;
+    }
+
+    if (strcmp(argv[1], "answer") == 0) {
+        const passport_work_view_t *view = passport_app_work_current();
+        if (!view->answered || view->option_count == 0) {
+            printf("work answer: nothing has been chosen; use \"work key down\" and"
+                   " \"work key ok\" first\n");
+            return 1;
+        }
+        const esp_err_t err = passport_work_client_answer(view->options[view->selected]);
+        char status[160];
+        passport_work_client_report(status, sizeof(status));
+        printf("work answer: %s (%s)\n", esp_err_to_name(err), status);
+        return (err == ESP_OK) ? 0 : 1;
+    }
+
+    if (strcmp(argv[1], "client") == 0) {
+        char status[160];
+        passport_work_client_report(status, sizeof(status));
+        printf("work client: %s\n", status);
         return 0;
     }
 

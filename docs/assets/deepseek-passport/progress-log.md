@@ -19,6 +19,64 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 23: work mode against a real server, end to end
+
+**Milestone:** the device fetches a status document from a server on the network, shows it, and
+sends an answer back. The whole loop was exercised against a real HTTP server, not a feed from the
+console.
+
+### What was built
+
+`passport_work_client` polls `<bridge_url>/work-status` on its own task and feeds the parsed view
+to the screen, and posts the chosen option to `<bridge_url>/answer`. Plain HTTP rather than TLS,
+for a reason recorded with the decision: the bridge is a companion on the same network, the
+document carries no credentials, and skipping the handshake keeps the largest free heap block at
+112 KiB instead of 68 — which this board needs for the display and the audio path. The consequence
+is written down too: anything on the network can serve a document or read an answer, so the bridge
+must not leave a trusted LAN before the reserved `bridge_token` becomes authentication.
+
+The protocol is now a document rather than an understanding:
+[the bridge protocol](bridge-protocol.md), with the field table, the rules the device applies, and
+what it deliberately does not do. `tools/mock_bridge.py` is a stand-in server for testing without
+the companion, and it is what the verification below used.
+
+### Verified end to end
+
+The device was pointed at a real HTTP server on this machine over the local network:
+
+```text
+config set bridge_url http://192.168.2.183:8080 ; config save
+work client   -> polls=2 failures=0 last="fetched, state=waiting"
+ui get work_task     -> text: deploy
+ui get work_state    -> text: waiting
+ui get work_question -> text: Which branch?
+ui get work_option0  -> text: > main
+```
+
+Nothing was fed over the console: **the screen updated itself from the network.** Then the answer
+path, from a button press to the server's log:
+
+```text
+work key down  -> the marker moved to develop
+work key ok    -> answer -> develop
+work answer    -> ESP_OK, last="answer accepted"
+the server recorded: [{"answer": "develop"}]
+```
+
+And the device follows a change rather than only fetching once. The server was restarted with a
+different scenario and, without any command, the device reported `last="fetched, state=done"` with
+the screen reading `indexing repository` / `done` / `100%`.
+
+### Notes
+
+- The device's `bridge_url` was cleared after the test, so it is not polling a host that has
+  stopped serving. Setting it again is the two commands above.
+- The mock bridge is a testing aid, not part of the product. It is committed because the protocol
+  is easier to trust with a reference implementation beside it, and because the next person needs
+  something to point the device at before the companion exists.
+
+---
+
 ## 2026-10-14 — Session 22: work mode on the screen, verified field by field
 
 **Milestone:** work mode is visible and button-driven. A task, its progress, and a question with

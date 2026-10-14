@@ -21,6 +21,7 @@
 | [架构](deepseek-passport/architecture.md) | 硬件约束、内存预算、固件与中继架构、语音流水线、智能体集成、配网、Web 后台，以及像素 UI |
 | [语音后端](deepseek-passport/voice-backends.md) | 语音流水线决策背后的提供商调研，以及被否决的设计 |
 | [路线图](deepseek-passport/roadmap.md) | 里程碑、退出标准和验证计划 |
+| [桥接协议](deepseek-passport/bridge-protocol.md) | 设备与其配套桥接服务之间的契约：传输方式、状态文档、回答，以及设备刻意不做的事 |
 | [进度日志](deepseek-passport/progress-log.md) | 带日期的决策、证据、验证状态和待决事项 |
 | [串口控制台](deepseek-passport/serial-cli.zh_CN.md) | 串口控制台：屏幕元素与控制台命令如何保持一一对应、命令列表，以及它的两条契约 |
 

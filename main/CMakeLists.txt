@@ -17,6 +17,7 @@ idf_component_register(
          "passport_utf8.c"
          "passport_voice.c"
          "passport_work.c"
+         "passport_work_client.c"
          "passport_wifi.c"
          "passport_metrics_math.c"
          "assets/passport_pet_assets.c"

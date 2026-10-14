@@ -20,6 +20,7 @@
 #include "passport_cli.h"
 #include "passport_config_store.h"
 #include "passport_pet_assets.h"
+#include "passport_work_client.h"
 #include "lvgl.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
@@ -182,6 +183,11 @@ void app_main(void) {
     // console tasks never have to host network work.
     if (passport_chat_start() != ESP_OK) {
         ESP_LOGE(TAG, "对话线程启动失败;按 OK 将无法提问");
+    }
+
+    // Work mode's bridge client. Its own task, because polling and posting are network work.
+    if (passport_work_client_start() != ESP_OK) {
+        ESP_LOGE(TAG, "工作模式轮询启动失败;工作状态不会自动更新");
     }
 
     ESP_LOGI(TAG, "就绪:Display=1 Button=%d Audio=%d Battery=%d App=%d Cfg=%d",

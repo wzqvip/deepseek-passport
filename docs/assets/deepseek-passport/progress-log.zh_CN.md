@@ -17,6 +17,55 @@
 
 ---
 
+## 2026-10-14 —— 第 23 次会话：工作模式对接真实服务器,端到端
+
+**里程碑：** 设备从网络上的服务器取回状态文档、显示它,并把回答发回去。**整个环路是对着一个真实的
+HTTP 服务器跑通的**,而不是从控制台喂进去的。
+
+### 已构建的内容
+
+`passport_work_client` 在自己的任务上轮询 `<bridge_url>/work-status`,把解析出的视图交给屏幕;并把
+所选选项 POST 到 `<bridge_url>/answer`。用明文 HTTP 而不是 TLS,原因与决定放在一起记录:桥接服务
+是同一网络上的配套进程,文档不携带凭据,而跳过握手能让**最大连续空闲块保持在 112 KiB 而不是
+68 KiB**——这块板子的显示与音频通路需要它。后果也写下来了:**网络上任何东西都能提供文档或读取回答**,
+所以在预留的 `bridge_token` 变成真正的认证之前,桥接服务不得离开可信局域网。
+
+协议现在是一份文档而不是一种默契:[桥接协议](bridge-protocol.md),含字段表、设备施加的规则,以及它
+刻意不做的事。`tools/mock_bridge.py` 是用于在配套服务存在之前测试的替身服务器——下面的验证就是用它。
+
+### 端到端验证
+
+设备经局域网指向本机上真实的 HTTP 服务器:
+
+```text
+config set bridge_url http://192.168.2.183:8080 ; config save
+work client   -> polls=2 failures=0 last="fetched, state=waiting"
+ui get work_task     -> text: deploy
+ui get work_state    -> text: waiting
+ui get work_question -> text: Which branch?
+ui get work_option0  -> text: > main
+```
+
+**没有任何内容是从控制台喂进去的:屏幕自己从网络更新了。** 然后是从按键到服务器日志的回答通路:
+
+```text
+work key down  -> 标记移动到 develop
+work key ok    -> answer -> develop
+work answer    -> ESP_OK, last="answer accepted"
+服务器记录到: [{"answer": "develop"}]
+```
+
+而且设备会**跟随变化**,不只是取一次。把服务器换一个场景重启后,没有任何命令,设备报告
+`last="fetched, state=done"`,屏幕显示 `indexing repository` / `done` / `100%`。
+
+### 备注
+
+- 测试后已清除设备的 `bridge_url`,以免它一直轮询一台已经停止服务的机器。重新设置就是上面那两条命令。
+- 替身桥接是**测试辅助**,不是产品的一部分。它被提交,是因为有一份参考实现放在旁边,协议更容易被信任,
+  也因为在配套服务存在之前,下一个人需要有个东西可以让设备指过去。
+
+---
+
 ## 2026-10-14 —— 第 22 次会话：工作模式上屏,逐字段验证
 
 **里程碑：** 工作模式现在**看得见、也能用按键操作**。任务、进度、以及带选项的问题都出现在面板上,
