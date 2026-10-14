@@ -29,6 +29,7 @@
 #include "passport_config_store.h"
 #include "passport_fonts.h"
 #include "passport_pet.h"
+#include "passport_power.h"
 #include "passport_provision.h"
 #include "passport_qr.h"
 #include "passport_utf8.h"
@@ -572,8 +573,10 @@ static void app_task(void *arg)
     while (s_running) {
         battery_refresh();
         // Between polls the task sleeps, so the gauge read never competes with
-        // rendering and the pet timer keeps its cadence.
+        // rendering and the pet timer keeps its cadence. The standby check rides along here:
+        // turning the screen off needs no task of its own.
         for (int waited = 0; s_running && waited < BATTERY_POLL_MS; waited += 100) {
+            passport_power_tick();
             vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
@@ -638,6 +641,14 @@ void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
         return;
     }
 
+    // A press that only lights the screen again should not also do whatever that key normally does.
+    // Standby and the application share the same three buttons, so this is the one place that has
+    // to arbitrate between "wake up" and "act".
+    if (passport_power_activity()) {
+        bsp_lvgl_unlock();
+        return;
+    }
+
     // On the setup screen the only button action is to go back; a second OK press must not
     // start a conversation from a screen that is showing a password.
     if (s_on_setup) {
@@ -680,11 +691,10 @@ void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
     }
 
     if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-        // Local standby preview. Real power management is a later milestone; this
-        // only shows the sleeping expression and states it on screen.
-        s_sleeping = !s_sleeping;
-        set_mood(s_sleeping ? PASSPORT_PET_SLEEPING : PASSPORT_PET_IDLE, 0);
+        // Deep sleep, waking on any key. This replaces the earlier "standby preview", which only
+        // drew a sleeping face and saved nothing.
         bsp_lvgl_unlock();
+        passport_power_sleep(0u);
         return;
     }
 

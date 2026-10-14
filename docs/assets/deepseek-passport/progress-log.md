@@ -19,6 +19,72 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 25: standby, deep sleep, and the wake-level bug it found
+
+**Milestone:** the device turns its screen off when nobody is there, lights it again on a key
+without also doing what that key means, and can sleep deeply on request.
+
+### What was built
+
+`passport_power` owns three things:
+
+- **Idle screen-off.** After the configured `idle_off_seconds` the backlight goes off; the
+  interface keeps running, so the screen returns instantly rather than being redrawn from nothing.
+  The timeout is read live, so changing it takes effect without a reboot, and **0 means never**,
+  which is the shipping default: the owner asked for an always-connected device first.
+- **The wake-versus-act arbitration.** Standby and the application share the same three buttons, so
+  the first press after the screen goes dark only lights it and is otherwise swallowed. Verified by
+  watching the pet's mood: it stayed `idle` through a press that lit the screen.
+- **Deep sleep**, on a long press of OK. The BSP hands the button pin back as a plain digital input
+  first — with the ADC still driving it the pin reads low, which is the level the wake condition
+  tests, so the device would wake at the instant of sleeping.
+
+Two refusals are deliberate rather than defensive padding. If a key is **already held** when sleep
+is requested, the request is refused with the reading that caused it, because the wake condition
+would already be satisfied. And if arming the wake source fails, the device does **not** sleep:
+better a device that stays awake than one nobody can wake.
+
+### The bug the device found
+
+The first attempt woke immediately and looked as though it had never slept. The cause was mine: the
+BSP reports the level the pin settles at **with nothing pressed** (1 here, because the keypad node is
+pulled up), and I armed the wake on that level instead of on the level a press produces. The wake
+condition was therefore true at the instant of sleeping.
+
+This is the hazard the BSP's own comment warns about, in the opposite direction — it warns that
+leaving the ADC in charge makes the pin read low and wakes the device instantly; it does not warn
+that the returned level is the *idle* one. The mapping is now inverted with the reasoning written
+beside it.
+
+### Verified on the device
+
+```text
+boot                power: screen=on idle=8s off_after=60s
+config set idle_off_seconds 10        (live: no reboot, no save)
+13 s later          power: screen=off idle=24s off_after=10s
+ui key ok click     the power module logs that the screen lit up (in Chinese, as it logs)
+                    power: screen=on idle=1s
+                    the pet's mood stayed "idle": the press was a wake-up, not an action
+power sleep 20      the console disappeared within about a second and the device stopped
+                    answering, which is what deep sleep looks like from here
+afterwards          the device answers again, so it woke
+```
+
+**Which source woke it cannot be seen from this console**, and that is worth stating rather than
+guessing: opening the port toggles DTR and RTS, which resets the chip — observed as
+`rst:0x15 (USB_UART_CHIP_RESET)` — so the wake cause is erased before it can be read. The evidence
+that it was the timer is a deduction: during deep sleep the USB peripheral is powered down and
+cannot reach the chip, and no key was pressed, so the armed timer was the only possible source.
+
+### What is not verified
+
+- **Waking by key**, which needs a person to press one: long-press OK to sleep, then press any key.
+  That is the shipping path, and it is the check this milestone hands over.
+- **Standby current.** It needs an external USB power meter, as recorded when the measurement plan
+  was written; no number is invented here.
+
+---
+
 ## 2026-10-14 — Session 24: work mode makes a sound, and only when it should
 
 **Milestone:** the device chimes when the desktop needs its owner, decides that from the document

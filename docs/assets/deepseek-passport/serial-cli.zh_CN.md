@@ -36,6 +36,7 @@ lv_obj_set_name(s_card, "audio");   /* the card labelled "Audio" */
 | `reboot` | 重启设备 |
 | `audio status\|tone [ms]\|loopback [ms]\|mute-check` | 当前哪个子系统占用音频通路；播放 1 kHz 单音；录一段再放回并给出电平读数；验证播放持有通路期间录音会被拒绝 |
 | `net probe <url>` | 对 URL 发 HTTPS GET；报告状态码、字节数，以及 TLS 会话活跃期间测得的堆内存 |
+| `power status` \| `power screen <on\|off>` \| `power sleep [seconds]` | 待机：屏幕是否点亮、已静置多久；手动点亮或熄屏；进入深睡并由按键唤醒。带 `seconds` 参数时会额外配置定时唤醒，那是**测试保险**而不是出货路径 |
 | `notify test [question\|done\|failed]` \| `notify status` | 播放一次通知提示音；或报告缓冲是否就绪、上次播放的是什么。播放期间麦克风关闭 |
 | `work feed <json>` \| `work key <up\|down\|ok>` \| `work show` \| `work screen` \| `work poll` \| `work answer` \| `work client` | 工作模式：按桥接服务将来的方式把状态文档交给设备、对着它按一次键、打印它正在显示的内容、把工作屏切到最前、立刻从桥接服务取一次、发送所选选项、或报告桥接客户端一直在做什么。从控制台喂入的文档**必须是 ASCII**：控制台会弄坏非 ASCII 输入 |
 | `prov status\|start\|stop\|page [route]\|qr\|form <k=v>` | 配网热点与它的 Web 控制台：开启或关闭；打印一次请求会返回的确切内容；打印面板上那个二维码的模块矩阵；或按 POST 到 `/save` 的方式应用一次提交 |

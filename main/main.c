@@ -21,6 +21,7 @@
 #include "passport_config_store.h"
 #include "passport_notify.h"
 #include "passport_pet_assets.h"
+#include "passport_power.h"
 #include "passport_work_client.h"
 #include "lvgl.h"
 #include "esp_log.h"
@@ -196,6 +197,9 @@ void app_main(void) {
     if (passport_notify_init() != ESP_OK) {
         ESP_LOGW(TAG, "提示音不可用;工作模式的状态变化将只上屏不发声");
     }
+
+    // Standby: starts the idle clock so a device that just booted does not dim immediately.
+    passport_power_start();
 
     ESP_LOGI(TAG, "就绪:Display=1 Button=%d Audio=%d Battery=%d App=%d Cfg=%d",
              button_err == ESP_OK, audio_ok, battery_ok, app_err == ESP_OK, cfg_loaded);

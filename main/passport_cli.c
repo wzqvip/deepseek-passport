@@ -37,6 +37,7 @@
 #include "passport_utf8.h"
 #include "passport_notify.h"
 #include "passport_portal.h"
+#include "passport_power.h"
 #include "passport_provision.h"
 #include "passport_qr.h"
 #include "passport_work.h"
@@ -947,6 +948,64 @@ static void print_work_view(const passport_work_view_t *view)
     }
 }
 
+static int cmd_power(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("usage: power <status|screen on|off|sleep [seconds]>\n");
+        printf("  status       whether the screen is on, and how long it has been idle\n");
+        printf("  screen on/off  light or darken the screen by hand\n");
+        printf("  sleep [s]    enter deep sleep, waking on a key; with seconds, also wake on a\n");
+        printf("               timer, which is a testing safety net rather than the shipped path\n");
+        return 1;
+    }
+
+    if (strcmp(argv[1], "status") == 0) {
+        char report[128];
+        passport_power_report(report, sizeof(report));
+        printf("power: %s\n", report);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "screen") == 0) {
+        if (argc < 3) {
+            printf("usage: power screen <on|off>\n");
+            return 1;
+        }
+        if (strcmp(argv[2], "on") == 0) {
+            // Through the same path a key press uses, so the idle clock is reset too.
+            (void)passport_power_activity();
+            printf("power: screen on\n");
+            return 0;
+        }
+        if (strcmp(argv[2], "off") == 0) {
+            bsp_display_backlight(0);
+            printf("power: screen off (use \"power screen on\", or press a key)\n");
+            return 0;
+        }
+        printf("power screen: unknown \"%s\"\n", argv[2]);
+        return 1;
+    }
+
+    if (strcmp(argv[1], "sleep") == 0) {
+        uint32_t seconds = 0u;
+        if (argc > 2) {
+            const int value = atoi(argv[2]);
+            if (value > 0) {
+                seconds = (uint32_t)value;
+            }
+        }
+        printf("power sleep: entering deep sleep%s; a key press wakes it\n",
+               (seconds > 0u) ? " with a timer safety net" : "");
+        const esp_err_t err = passport_power_sleep(seconds);
+        // Reaching here means it did not sleep.
+        printf("power sleep: refused: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+
+    printf("power: unknown subcommand \"%s\"\n", argv[1]);
+    return 1;
+}
+
 static int cmd_notify(int argc, char **argv)
 {
     if (argc < 2 || (strcmp(argv[1], "test") != 0 && strcmp(argv[1], "status") != 0)) {
@@ -1456,6 +1515,7 @@ esp_err_t passport_cli_start(void)
     register_command("prov", "Setup portal: status | start | stop | page [route] | qr | form <k=v>", &cmd_prov);
     register_command("work", "Work mode: feed <json> | key <up|down|ok> | show | screen | poll | answer | client", &cmd_work);
     register_command("notify", "Notification chimes: test [question|done|failed] | status", &cmd_notify);
+    register_command("power", "Standby: status | screen on|off | sleep [seconds]", &cmd_power);
     register_command("config", "Configuration: list | get | set | save | reset", &cmd_config);
     register_command("audio", "Audio path: status | tone [ms] | loopback [ms] | mute-check", &cmd_audio);
     register_command("ui", "Screen inspection: tree | names | get | tap | key | screen", &cmd_ui);
