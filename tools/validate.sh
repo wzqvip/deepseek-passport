@@ -71,10 +71,6 @@ run_static_checks() {
         -o "${test_dir}/test_passport_tone" -lm
     "${test_dir}/test_passport_tone"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
-        tests/test_demo_navigation.c main/demo_navigation.c \
-        -o "${test_dir}/test_demo_navigation"
-    "${test_dir}/test_demo_navigation"
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_key_guard.c -o "${test_dir}/test_key_guard"
     "${test_dir}/test_key_guard"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src \
@@ -99,13 +95,11 @@ run_static_checks() {
         tests/test_bsp_audio_recovery.c components/bsp/src/bsp_es8311_sleep_check.c \
         -o "${test_dir}/test_bsp_audio_recovery"
     "${test_dir}/test_bsp_audio_recovery"
-    for demo in audio low_power ble wifi; do
-        "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
-            -ffunction-sections -fdata-sections -Itests/demo_stubs -Imain \
-            "tests/test_demo_${demo}_runtime.c" -Wl,--gc-sections \
-            -o "${test_dir}/test_demo_${demo}_runtime"
-        "${test_dir}/test_demo_${demo}_runtime"
-    done
+    # The demo runtime tests were removed with the demo interface they exercised: they included
+    # main/demo_audio.c, demo_ble.c, demo_low_power.c and demo_wifi.c directly, and those pages were
+    # replaced by the application's own screens. Their deep-sleep contract was not deleted with them —
+    # it was retargeted at main/passport_power.c, because it is what found that the replacement was
+    # sleeping without shutting the board down first.
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_deep_sleep_contract.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_key_wake_contract.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_check_repo.py

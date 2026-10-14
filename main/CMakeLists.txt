@@ -25,10 +25,10 @@ idf_component_register(
          "passport_wifi.c"
          "passport_metrics_math.c"
          "assets/passport_pet_assets.c"
-         # Kept for the repository's host gate, which compiles these two sources
-         # directly (tests/test_demo_navigation.c, tests/test_ui_pixel_math.c).
-         # The application itself no longer uses them.
-         "demo_navigation.c"
+         # ui_pixel_math.c is not used by the application but is compiled by the repository's host
+         # gate (tests/test_ui_pixel_math.c). demo_navigation.c used to sit beside it for the same
+         # reason; it was removed with the demo interface, since nothing had called it for several
+         # milestones and leaving it in the image only added flash.
          "ui_pixel_math.c"
     INCLUDE_DIRS "." "assets"
     REQUIRES bsp bt console esp-tls esp_app_format esp_event esp_http_client esp_http_server esp_hw_support esp_netif esp_timer esp_wifi mbedtls nvs_flash

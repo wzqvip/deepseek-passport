@@ -53,7 +53,12 @@ class DeepSleepContractTest(unittest.TestCase):
         cls.battery = read("components/bsp/src/bsp_battery.c")
         cls.display = read("components/bsp/src/bsp_display.c")
         cls.i2c = read("components/bsp/src/bsp_i2c.c")
-        cls.demo = read("main/demo_low_power.c")
+        # The application's own sleep path. This used to read the demo's sleep task; when the demo
+        # interface was replaced, that task went with it and the contract silently stopped being
+        # checked — which is how it was discovered that the replacement was sleeping without the
+        # shutdown sequence at all. The contract is what found the omission, so it is pointed at the
+        # code that replaced the demo rather than deleted with it.
+        cls.application = read("main/passport_power.c")
 
     def test_es8311_force_sleep_sequence_is_complete_and_ordered(self) -> None:
         expected = [
@@ -139,7 +144,7 @@ class DeepSleepContractTest(unittest.TestCase):
                         init.index("spi_bus_initialize"))
 
     def test_terminal_shutdown_order_precedes_deep_sleep(self) -> None:
-        body = function_body(self.demo, "sleep_task")
+        body = function_body(self.application, "passport_power_sleep")
         calls = [
             "bsp_battery_sleep()",
             "bsp_audio_sleep()",

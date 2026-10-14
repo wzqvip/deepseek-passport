@@ -19,6 +19,80 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 33: the complete gate, and the deep-sleep omission it found
+
+**Milestone:** the repository's whole validation gate runs, and it found something that had been missing
+since the application replaced the demo.
+
+### The gate is larger than the tests I had been running
+
+`tools/validate.sh --static` builds and runs **17 C tests and 6 Python contract tests**, not the ten
+passport tests I had been reporting. Every earlier entry in this log that says "10 of 10 host tests
+PASS" is a true statement about the subset I ran and a misleading one about the repository: the
+upstream tests for the BSP (`test_bsp_button`, `test_bsp_lvgl_init`, `test_bsp_audio_recovery`,
+`test_bsp_display_rounding`, `test_bsp_es8311_sleep_check`), key handling, and the Python contracts were
+never part of it. They are now, and they pass. From here the count is the whole suite.
+
+### Two failures, and one of them was a real omission
+
+Four demo runtime tests failed to compile and one Python test errored, all for the same reason: they
+read `main/demo_audio.c`, `demo_ble.c`, `demo_low_power.c` and `demo_wifi.c`, which this project
+deleted when it replaced the demo interface.
+
+The first four are tests of a removed feature and were removed with it, along with the demo stub
+harness they were the only users of. But `test_deep_sleep_contract.py` was not a test of the demo — it
+was a **contract about the order in which this board must be shut down before sleeping**, and it was
+reading the demo's `sleep_task` only because that was the last code to do it properly. Retargeted at
+the replacement instead of deleted, it failed immediately:
+
+```text
+AssertionError: function not found: sleep_task
+```
+
+because **the replacement never shuts the board down at all.** `passport_power_sleep()` checked the key,
+killed the buttons, armed the wake source and slept — leaving the battery gauge awake, the codec
+powered, the I2S and I2C pins driven, and the panel's charge pumps running. On a board where the
+standby current was always going to be an external measurement, that would have been the difference
+between deep sleep and pretending.
+
+The sequence the contract asks for is now in `passport_power_sleep()`, in the reference order, with the
+panel teardown under the interface's lock: battery, codec, I2S pins, I2C pins, panel, then the sleep.
+The contract names `passport_power.c` now and passes.
+
+The lesson is worth stating plainly: **when a feature is replaced, its contracts have to be moved, not
+just its tests.** The tests that only exercised the old code were noise; the one that encoded a rule
+about the hardware was the whole reason the old code was correct.
+
+### The demo is now fully replaced
+
+`demo_navigation.c` and `demo_radio.h` were unreferenced and `demo_navigation.c` was still being
+compiled into the image, so it was dead flash. Both are gone, with their test, their stubs, and their
+lines in the gate. Nothing under `main/` or `tests/` matches `demo` any more.
+
+### The firmware half of the gate
+
+```text
+idf.py -B <own dir> build                PASS
+idf.py merge-bin -o <absolute path>      merged image, 2,349,776 bytes
+tools/verify_firmware.py                 Firmware layout: PASS (app 2,284,240 / 8,323,072 in 'factory')
+                                         Merged firmware: PASS (2,349,776 bytes, flash at 0x0)
+tools/archive_firmware.py create         archive keyed by content hash: bins, elf, map, manifest
+```
+
+One Windows trap worth recording for anyone mirroring the bash gate by hand: `merge-bin` runs esptool
+with the **build directory as its working directory**, so a relative `-o build/fwgate/...` becomes
+`build/fwgate/build/fwgate/...` and fails with a `FileNotFoundError` that names the file it could not
+write. The gate's own script passes an absolute path, which is why it never noticed.
+
+### Verified on the device after the change
+
+The gate-verified build was flashed and the new shutdown path exercised: `power sleep 15` put the device
+to sleep with the console vanishing immediately, and after waking, `audio status` reports the path free,
+`notify test question` plays 4096 samples through a codec that had been put to sleep, and `ui audit`
+reports no font problems on a panel that had been shut down and held. The shutdown is not one-way.
+
+---
+
 ## 2026-10-14 — Session 32: the join code verified at both levels
 
 **Milestone:** the code the device draws has been checked against an independent implementation, and the

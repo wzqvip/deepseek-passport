@@ -17,6 +17,70 @@
 
 ---
 
+## 2026-10-14 —— 第 33 次会话：完整门禁,以及它抓出的深睡遗漏
+
+**里程碑：** 仓库的**整套**校验门禁跑起来了,而它抓出了一件从"应用替换掉 demo"那一刻起就一直缺的东西。
+
+### 门禁比我一直在跑的那几个测试大得多
+
+`tools/validate.sh --static` 会构建并运行 **17 个 C 测试与 6 个 Python 契约测试**,而不是我一直在报告的
+那 **10 个 passport 测试**。本日志里每一条写着"10 of 10 host tests PASS"的旧记录,作为**我跑过的子集**
+的陈述是真的,作为**仓库**的陈述则是误导:BSP 的上游测试(`test_bsp_button`、`test_bsp_lvgl_init`、
+`test_bsp_audio_recovery`、`test_bsp_display_rounding`、`test_bsp_es8311_sleep_check`)、按键处理、
+以及 Python 契约测试**从来不在其中**。现在它们在,而且都通过。**从这条起,报告的数字就是整套。**
+
+### 两个失败,其中一个是真正的遗漏
+
+四个 demo 运行时测试编译失败、一个 Python 测试报错,原因相同:它们读取 `main/demo_audio.c`、
+`demo_ble.c`、`demo_low_power.c`、`demo_wifi.c`——本项目在**替换 demo 界面**时删掉的那几个文件。
+
+前四个是**已移除功能的测试**,随功能一起删除,连同只有它们使用的 demo 桩环境。但
+`test_deep_sleep_contract.py` **不是 demo 的测试**——它是一条**关于"入睡前这块板必须以什么顺序关掉"的
+契约**,它去读 demo 的 `sleep_task` 只是因为那是最后一份正确实现它的代码。把它**指向替代者而不是删除**,
+它立刻失败:
+
+```text
+AssertionError: function not found: sleep_task
+```
+
+因为**替代者根本没有关板子。** `passport_power_sleep()` 检查按键、废掉按键、配置唤醒源、入睡——把电量计
+留在醒着、编解码器留着供电、I2S 与 I2C 引脚继续被驱动、面板的电荷泵继续跑。在一块**待机电流注定要靠
+外部测量**的板子上,这正是"深睡"与"假装深睡"之间的差别。
+
+契约要求的顺序现在写进了 `passport_power_sleep()`,按参考顺序,面板的收尾在界面锁之内:电池、编解码器、
+I2S 引脚、I2C 引脚、面板,然后入睡。契约现在指向 `passport_power.c` 并通过。
+
+教训值得直说:**当一个功能被替换时,它的契约必须被搬走,而不只是它的测试。** 只跑旧代码的那些测试是
+噪音;而**编码了一条硬件规则的那一个,才是旧代码之所以正确的全部理由。**
+
+### demo 现在被完整替换了
+
+`demo_navigation.c` 与 `demo_radio.h` 已无人引用,而 `demo_navigation.c` **仍在被编译进镜像**,即死代码占
+闪存。现在两者都已删除,连同它们的测试、桩环境、以及门禁里对应的行。`main/` 与 `tests/` 下**再没有任何
+名字里带 demo 的东西**。
+
+### 门禁的固件那半
+
+```text
+idf.py -B <自己的目录> build              PASS
+idf.py merge-bin -o <绝对路径>            合并镜像 2,349,776 字节
+tools/verify_firmware.py                 固件布局 PASS(应用 2,284,240 / 8,323,072,位于 factory)
+                                         合并固件 PASS(2,349,776 字节,烧写于 0x0)
+tools/archive_firmware.py create          按内容哈希归档:bins、elf、map、manifest
+```
+
+有一个值得记下的 Windows 陷阱,给手工照搬 bash 门禁的人:`merge-bin` 会让 esptool **以构建目录为工作
+目录**运行,所以相对的 `-o build/fwgate/...` 会变成 `build/fwgate/build/fwgate/...`,并以一个"找不到它
+写不出的那个文件"的 `FileNotFoundError` 失败。门禁脚本自己传的是绝对路径,所以它从未注意到这一点。
+
+### 改动之后在真机上验证
+
+把门禁验证过的固件刷进去,并走了一遍新的关机路径:`power sleep 15` 让设备入睡,控制台立刻消失;唤醒后
+`audio status` 报告通路空闲,`notify test question` 让**曾经被送睡的编解码器**播出 4096 个采样,
+`ui audit` 在一块**被关过并保持住的面板**上报出零字体问题。**这次关机不是单向的。**
+
+---
+
 ## 2026-10-14 —— 第 32 次会话：入网二维码在两个层面都验证过了
 
 **里程碑：** 设备绘制的二维码已经**对着一个独立实现逐格核对**,而它绘制的**像素**也**对着自己的编码器**

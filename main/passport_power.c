@@ -5,7 +5,10 @@
 #include <string.h>
 
 #include "bsp_button.h"
+#include "bsp_audio.h"
+#include "bsp_battery.h"
 #include "bsp_display.h"
+#include "bsp_i2c.h"
 #include "bsp_pins.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
@@ -123,6 +126,25 @@ esp_err_t passport_power_sleep(uint32_t timer_wake_seconds)
             return err;
         }
         ESP_LOGW(TAG, "已配置 %u 秒定时唤醒作为保险(仅测试用)", (unsigned)timer_wake_seconds);
+    }
+
+    // Shut the peripherals down in order before sleeping. Skipping this is the difference between
+    // deep sleep and pretending: the panel keeps its charge pumps running, the codec stays powered,
+    // and the pins sit at whatever level they were left at, which is both a current cost and a way to
+    // wake to a glitched screen. The order below is the one the board's own reference application
+    // used, and a repository test guards it — that test read the deleted demo's sleep task, which is
+    // how this omission was found.
+    bsp_battery_sleep();
+    bsp_audio_sleep();
+    bsp_audio_prepare_deep_sleep();
+    bsp_i2c_prepare_deep_sleep();
+    // The panel teardown must not race a redraw, so it happens under the interface's lock.
+    if (bsp_lvgl_lock(1000)) {
+        bsp_display_prepare_deep_sleep();
+        bsp_lvgl_unlock();
+    } else {
+        ESP_LOGW(TAG, "界面锁超时,仍要熄灭面板");
+        bsp_display_prepare_deep_sleep();
     }
 
     ESP_LOGI(TAG, "即将深睡;按任意键唤醒");
