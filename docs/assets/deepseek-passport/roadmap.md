@@ -54,7 +54,10 @@ design, and it is deliberately first.
 - A decision on the LVGL pool size, the capture and playback ring sizes, and what
   the direct-mode provider path costs in RAM — measured with a live TLS session,
   not estimated.
-- An idle-current measurement with the always-connected profile selected (`Q-8`).
+- The always-connected idle state entered and held, so that idle current can be
+  measured externally with a USB power meter. The firmware cannot measure its own
+  current — the board has no current-sense path — so this number is an instrument
+  check and stays under `Unverified` until someone takes it.
 - An audio loopback check: microphone to speaker through the real codec path,
   confirming the mute-during-playback rule is enforceable.
 

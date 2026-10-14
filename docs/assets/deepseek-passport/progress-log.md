@@ -19,6 +19,67 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 3: device identified, toolchain gap, M1 started
+
+**Milestone:** `M1` in progress.
+
+### What was done
+
+1. **Device identified.** After a cable and USB-port change the Passport
+   enumerates as an Espressif USB Serial/JTAG device, `USB\VID_303A&PID_1001`,
+   with its console on `COM47`. That matches the documented board mapping: a
+   native USB Serial/JTAG console and no UART bridge. The WCH CH342 dual-UART
+   bridge on `COM11`/`COM13` belongs to some other device and is not part of this
+   board.
+2. **Toolchain gap found, and closed.** The machine had only ESP-IDF v6.1
+   (`C:\esp\v6.1\esp-idf`, the single entry in the EIM registry, with only a v6.1
+   offline archive). The repository pins `>=5.5.3,<5.6.0`, so v6.1 cannot build
+   this firmware. ESP-IDF v5.5.3 was then installed **side by side** through EIM
+   into `C:\esp`, leaving v6.1 untouched and still the selected version, and the
+   firmware was built with v5.5.3 to prove it.
+3. **Branch created.** `feature/deepseek-passport`, branched from fork `main`,
+   which is level with `upstream/main` — so the baseline is aligned and the design
+   documents travel with the branch.
+4. **First M1 increment landed and verified.** The pure measurement arithmetic
+   plus its host test, wired into the static gate.
+
+### Why the arithmetic came first
+
+The firmware's ESP-IDF modules cannot be compiled until 5.5.3 exists, but the
+measurement math can be, and that is exactly where off-by-one and overflow
+mistakes hide. Writing the verifiable part first leaves a working checkpoint on
+the branch instead of one large change that nothing can build.
+
+### Scope correction for M1
+
+Idle current **cannot** be measured by the firmware. The board has no
+current-sense path, and the CW2017 gauge reports the battery, not the board's draw
+from USB. M1 can only enter the always-connected idle state and hold it, so that a
+person with a USB power meter can read the number. It therefore stays under
+`Unverified` until someone takes it, and the `M1` exit criteria in
+[roadmap.md](roadmap.md) are corrected accordingly.
+
+### Also recorded
+
+- The pet sprites currently sit beside their design document under `docs/assets/`,
+  which the fork `main` scope allows. When the firmware build first consumes them
+  they must move to the repository-root `assets/images/` tree with the generator
+  under `tools/`, as the asset-placement rule requires, and the design document
+  must link to the new location.
+- The firmware will read its Wi-Fi credentials from Kconfig, so a real SSID and
+  password live only in the gitignored `sdkconfig` and never in source.
+
+### Validation for this session
+
+| Check | Result |
+| --- | --- |
+| Host tests | **PASS** — the new `test_passport_metrics_math` and the pre-existing pure tests compile with `-Wall -Wextra -Werror` and pass |
+| Firmware build | **PASS** — ESP-IDF v5.5.3 from `C:\esp\v5.5.3\esp-idf`, target `esp32c3`, isolated build in `build/fw` with its own `sdkconfig`. Image `FoloToy-AI-Passport.bin`, 0x174ea0 bytes (about 1.5 MB) in an 8.3 MB application partition, 82% free. This builds the **baseline** application; the M1 application is not implemented yet, so this proves the toolchain and the repository, not M1 |
+| Device tests | **NOT RUN** — the device is detected and its console port is known, but nothing has been flashed: flashing needs explicit approval and a build worth flashing |
+| Unverified | Idle current (an external instrument check); every firmware measurement; the TLS probe's behaviour on this network |
+
+---
+
 ## 2026-10-13 (later) — Session 2: product owner answers and the pet design
 
 **Milestone:** `M0` complete.
