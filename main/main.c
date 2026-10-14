@@ -19,6 +19,7 @@
 #include "passport_chat.h"
 #include "passport_cli.h"
 #include "passport_config_store.h"
+#include "passport_notify.h"
 #include "passport_pet_assets.h"
 #include "passport_work_client.h"
 #include "lvgl.h"
@@ -188,6 +189,12 @@ void app_main(void) {
     // Work mode's bridge client. Its own task, because polling and posting are network work.
     if (passport_work_client_start() != ESP_OK) {
         ESP_LOGE(TAG, "工作模式轮询启动失败;工作状态不会自动更新");
+    }
+
+    // The chime buffer, allocated once before the heap fragments. A notification that fails to
+    // allocate would be silent for a reason nobody could see.
+    if (passport_notify_init() != ESP_OK) {
+        ESP_LOGW(TAG, "提示音不可用;工作模式的状态变化将只上屏不发声");
     }
 
     ESP_LOGI(TAG, "就绪:Display=1 Button=%d Audio=%d Battery=%d App=%d Cfg=%d",

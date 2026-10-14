@@ -64,6 +64,12 @@ run_static_checks() {
         tests/test_passport_work.c main/passport_work.c main/passport_json.c \
         -o "${test_dir}/test_passport_work"
     "${test_dir}/test_passport_work"
+    # -lm: the test checks the integer approximation against the library's sine; the firmware
+    # itself uses no floating point.
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_passport_tone.c main/passport_tone.c \
+        -o "${test_dir}/test_passport_tone" -lm
+    "${test_dir}/test_passport_tone"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_demo_navigation.c main/demo_navigation.c \
         -o "${test_dir}/test_demo_navigation"

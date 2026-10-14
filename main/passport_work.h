@@ -19,6 +19,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #define PASSPORT_WORK_MAX_OPTIONS 4
 #define PASSPORT_WORK_TASK_MAX    64
@@ -57,6 +58,25 @@ typedef enum {
     PASSPORT_WORK_ACT_CHIME,       // the state changed in a way worth a sound
     PASSPORT_WORK_ACT_SEND_ANSWER, // post the selected option back to the bridge
 } passport_work_action_t;
+
+// What, if anything, to announce when a new document arrives.
+typedef enum {
+    PASSPORT_WORK_ANNOUNCE_NONE = 0,
+    PASSPORT_WORK_ANNOUNCE_QUESTION,   // a question is waiting: the owner is needed
+    PASSPORT_WORK_ANNOUNCE_DONE,       // the task finished
+    PASSPORT_WORK_ANNOUNCE_FAILED,     // the task failed
+    PASSPORT_WORK_ANNOUNCE_SPEAK,      // the owner asked for speech; not wired yet
+} passport_work_announcement_t;
+
+// Decide whether a new document deserves a sound.
+//
+// `changed` is the caller's judgement that something worth announcing is different — a state
+// change, or a new question. `notify_mode` is the configuration's 0 silent, 1 chime, 2 speak.
+// A poll runs every few seconds, so the common answer has to be "nothing": a device that beeps
+// on every fetch is worse than one that never does.
+passport_work_announcement_t passport_work_announce(bool changed,
+                                                    passport_work_state_t current,
+                                                    uint8_t notify_mode);
 
 // Parse a status document into `view`, replacing whatever was there. A missing or malformed
 // field becomes a default rather than a failure: a bridge that grows a new field, or omits one,

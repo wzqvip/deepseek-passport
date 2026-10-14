@@ -19,6 +19,73 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 24: work mode makes a sound, and only when it should
+
+**Milestone:** the device chimes when the desktop needs its owner, decides that from the document
+alone, and stays quiet the rest of the time.
+
+### What was built
+
+`passport_tone` generates a sine in integers — no floating point, no table of unexplained numbers,
+no library. Bhaskara's approximation on the half wave, mirrored, with the angle kept in units of
+1/1024 degree and a linear rise and fall so the note does not click.
+
+`passport_notify` sequences two or three notes and plays them through the existing audio path, so
+the chime is subject to the same arbitration as everything else: **the microphone is closed for the
+duration**. A notification that recorded itself would be a defect on a board with no echo
+cancellation, and the arbiter already forbids it.
+
+The decision of *whether* to make a sound is pure and lives in `passport_work`, because it is a
+rule about work states rather than about audio: a new question and a finished or failed task are
+worth interrupting for; running and idle are not; and `notify_mode` 0 means silence whatever
+happened. Mode 2 asks for speech, which is not wired to work mode yet, so it is reported as its own
+answer and the device chimes while saying in the log that speech is not connected — a device
+configured for speech should still be audible rather than silent about it.
+
+Two judgements worth naming: **a poll every five seconds must not chatter**, so only a change is
+announced; and **the first document after boot is not announced**, because a question may have been
+waiting for hours and chiming at power-on teaches the owner to ignore the sound.
+
+### The tone test found a real bug, in the generator
+
+The test checks the waveform against the C library's sine, so it measures the **total** error rather
+than the approximation's own. That caught a mistake the formula's reputation would have hidden: the
+angle was quantised to whole degrees, and near the ends of the half wave that alone put the sample
+up to 1.75% away from a true sine — an order of magnitude worse than Bhaskara's 0.16%. Keeping the
+angle in 1/1024 degree fixed it, and the test now asserts the worst error over a whole turn is under
+0.5%.
+
+The test also asserts the pitch by counting zero crossings (1000 Hz over a quarter second is about
+250 of them), that the ends of a note are silent, that filling in chunks gives byte-identical output
+to filling at once, and the degenerate cases: a fade longer than the note, a zero-length note, an
+amplitude above full scale, and a zero sample rate.
+
+A mistake of mine in the test itself is worth recording: it first asked the generator for 16,000
+samples into a 4,096-sample array and crashed. The generator did exactly what it was asked; sizing
+the caller's buffer is the caller's job.
+
+### Verified on the device
+
+```text
+notify status   -> buffer=ready, notify_mode: 1
+notify test question / done / failed
+                -> ESP_OK each time, 4096 samples rendered
+audio status    -> owner free, microphone allowed again afterwards
+```
+
+Then the live behaviour, against the stand-in bridge: with the bridge serving a `running` task the
+device polled for ten seconds and **logged no chime at all**; when the bridge switched to `waiting`,
+the device logged the question chime and the screen read `Which branch?`. So it announces a change
+and nothing else.
+
+### Not verified
+
+**Whether the chimes sound right.** The generator is measured, the playback reports success, and the
+arbitration is checked — but nobody in this session has heard them. That is a person's check, and it
+is the same class of check as whether the QR code scans.
+
+---
+
 ## 2026-10-14 — Session 23: work mode against a real server, end to end
 
 **Milestone:** the device fetches a status document from a server on the network, shows it, and

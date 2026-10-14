@@ -35,6 +35,7 @@
 #include "passport_json.h"
 #include "passport_fonts.h"
 #include "passport_utf8.h"
+#include "passport_notify.h"
 #include "passport_portal.h"
 #include "passport_provision.h"
 #include "passport_qr.h"
@@ -946,6 +947,42 @@ static void print_work_view(const passport_work_view_t *view)
     }
 }
 
+static int cmd_notify(int argc, char **argv)
+{
+    if (argc < 2 || (strcmp(argv[1], "test") != 0 && strcmp(argv[1], "status") != 0)) {
+        printf("usage: notify <test [question|done|failed]|status>\n");
+        printf("  test [kind]  play the chime for a kind of announcement (default question)\n");
+        printf("  status       whether the buffer is ready and what was played last\n");
+        return 1;
+    }
+
+    if (strcmp(argv[1], "status") == 0) {
+        char report[128];
+        passport_notify_report(report, sizeof(report));
+        printf("notify: %s\n", report);
+        printf("notify_mode: %u (0 silent, 1 chime, 2 speak)\n",
+               (unsigned)passport_config_current()->notify_mode);
+        return 0;
+    }
+
+    passport_work_announcement_t kind = PASSPORT_WORK_ANNOUNCE_QUESTION;
+    if (argc > 2) {
+        if (strcmp(argv[2], "done") == 0) {
+            kind = PASSPORT_WORK_ANNOUNCE_DONE;
+        } else if (strcmp(argv[2], "failed") == 0) {
+            kind = PASSPORT_WORK_ANNOUNCE_FAILED;
+        } else if (strcmp(argv[2], "question") != 0) {
+            printf("notify test: unknown kind \"%s\"\n", argv[2]);
+            return 1;
+        }
+    }
+    const esp_err_t err = passport_notify_play(kind);
+    char report[128];
+    passport_notify_report(report, sizeof(report));
+    printf("notify test: %s (%s)\n", esp_err_to_name(err), report);
+    return (err == ESP_OK) ? 0 : 1;
+}
+
 static int cmd_work(int argc, char **argv)
 {
     if (argc < 2) {
@@ -1417,7 +1454,8 @@ esp_err_t passport_cli_start(void)
     register_command("font", "Text font: font probe | font shot", &cmd_font);
     register_command("wifi", "Wi-Fi station: status | scan | connect [ms] | disconnect", &cmd_wifi);
     register_command("prov", "Setup portal: status | start | stop | page [route] | qr | form <k=v>", &cmd_prov);
-    register_command("work", "Work mode: feed <json> | key <up|down|ok> | show", &cmd_work);
+    register_command("work", "Work mode: feed <json> | key <up|down|ok> | show | screen | poll | answer | client", &cmd_work);
+    register_command("notify", "Notification chimes: test [question|done|failed] | status", &cmd_notify);
     register_command("config", "Configuration: list | get | set | save | reset", &cmd_config);
     register_command("audio", "Audio path: status | tone [ms] | loopback [ms] | mute-check", &cmd_audio);
     register_command("ui", "Screen inspection: tree | names | get | tap | key | screen", &cmd_ui);

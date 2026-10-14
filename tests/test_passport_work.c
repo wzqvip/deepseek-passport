@@ -138,6 +138,38 @@ int main(void)
     assert(passport_work_key(&view, PASSPORT_WORK_KEY_NONE) == PASSPORT_WORK_ACT_NONE);
     assert(!passport_work_awaiting_answer(NULL));
 
+    // --- what deserves a sound ----------------------------------------------
+    // A poll runs every few seconds, so "nothing" has to be the common answer.
+    assert(passport_work_announce(false, PASSPORT_WORK_WAITING, 1u) ==
+           PASSPORT_WORK_ANNOUNCE_NONE);
+    assert(passport_work_announce(true, PASSPORT_WORK_RUNNING, 1u) ==
+           PASSPORT_WORK_ANNOUNCE_NONE);
+    assert(passport_work_announce(true, PASSPORT_WORK_IDLE, 1u) ==
+           PASSPORT_WORK_ANNOUNCE_NONE);
+
+    // A question and a finished task are worth interrupting for; running is not.
+    assert(passport_work_announce(true, PASSPORT_WORK_WAITING, 1u) ==
+           PASSPORT_WORK_ANNOUNCE_QUESTION);
+    assert(passport_work_announce(true, PASSPORT_WORK_DONE, 1u) ==
+           PASSPORT_WORK_ANNOUNCE_DONE);
+    assert(passport_work_announce(true, PASSPORT_WORK_FAILED, 1u) ==
+           PASSPORT_WORK_ANNOUNCE_FAILED);
+
+    // Silent mode means silent, whatever happened.
+    for (int s = 0; s <= (int)PASSPORT_WORK_FAILED; s++) {
+        assert(passport_work_announce(true, (passport_work_state_t)s, 0u) ==
+               PASSPORT_WORK_ANNOUNCE_NONE);
+    }
+
+    // Speaking is asked for but not wired, and it is reported as such rather than as a chime.
+    assert(passport_work_announce(true, PASSPORT_WORK_WAITING, 2u) ==
+           PASSPORT_WORK_ANNOUNCE_SPEAK);
+    assert(passport_work_announce(true, PASSPORT_WORK_WAITING, 9u) ==
+           PASSPORT_WORK_ANNOUNCE_SPEAK);
+    // A finished task is a chime even in speak mode: there is nothing to say about it.
+    assert(passport_work_announce(true, PASSPORT_WORK_DONE, 2u) ==
+           PASSPORT_WORK_ANNOUNCE_DONE);
+
     // --- names --------------------------------------------------------------
     assert(strcmp(passport_work_state_name(PASSPORT_WORK_WAITING), "waiting") == 0);
     assert(strcmp(passport_work_state_name(PASSPORT_WORK_DONE), "done") == 0);

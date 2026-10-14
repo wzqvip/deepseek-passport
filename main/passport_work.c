@@ -115,6 +115,31 @@ bool passport_work_parse(const char *json, passport_work_view_t *view)
     return true;
 }
 
+passport_work_announcement_t passport_work_announce(bool changed,
+                                                    passport_work_state_t current,
+                                                    uint8_t notify_mode)
+{
+    // Silence is a setting, not a failure: mode 0 means the owner does not want to be interrupted.
+    if (!changed || notify_mode == 0u) {
+        return PASSPORT_WORK_ANNOUNCE_NONE;
+    }
+
+    switch (current) {
+    case PASSPORT_WORK_WAITING:
+        // Mode 2 asks for speech. The voice pipeline is not wired to work mode yet, so this is
+        // reported as its own answer and the caller decides; pretending it spoke would be worse.
+        return (notify_mode >= 2u) ? PASSPORT_WORK_ANNOUNCE_SPEAK
+                                   : PASSPORT_WORK_ANNOUNCE_QUESTION;
+    case PASSPORT_WORK_DONE:
+        return PASSPORT_WORK_ANNOUNCE_DONE;
+    case PASSPORT_WORK_FAILED:
+        return PASSPORT_WORK_ANNOUNCE_FAILED;
+    default:
+        // Running and idle are not worth interrupting anyone for.
+        return PASSPORT_WORK_ANNOUNCE_NONE;
+    }
+}
+
 bool passport_work_awaiting_answer(const passport_work_view_t *view)
 {
     return view != NULL && view->state == PASSPORT_WORK_WAITING && view->option_count > 0 &&

@@ -10,6 +10,7 @@
 #include "passport_app.h"
 #include "passport_config_store.h"
 #include "passport_http.h"
+#include "passport_notify.h"
 #include "passport_wifi.h"
 #include "passport_work.h"
 
@@ -28,7 +29,9 @@ static volatile bool s_poll_now;
 static volatile bool s_running;
 static char s_last[96] = "no attempt yet";
 static char s_last_task[PASSPORT_WORK_TASK_MAX];
+static char s_last_question[PASSPORT_WORK_QUESTION_MAX];
 static passport_work_state_t s_last_state = PASSPORT_WORK_IDLE;
+static bool s_have_document;
 static int s_polls;
 static int s_failures;
 
@@ -145,18 +148,38 @@ static void poll_once(void)
     }
 
     // Worth announcing only when something changed: a poll every few seconds must not chatter.
-    const bool changed = (parsed.state != s_last_state) ||
-                         (strcmp(parsed.task, s_last_task) != 0);
+    // A new question counts as a change even while the state stays "waiting", because that is
+    // exactly when the owner is needed again.
+    const bool state_changed = (parsed.state != s_last_state) ||
+                               (strcmp(parsed.task, s_last_task) != 0);
+    const bool question_changed = (parsed.question[0] != '\0') &&
+                                  (strcmp(parsed.question, s_last_question) != 0);
+
+    // The first document after boot is not announced. The question may have been waiting for
+    // hours, and chiming at power-on would teach the owner to ignore the sound.
+    const bool announce = s_have_document && (state_changed || question_changed);
+
     s_last_state = parsed.state;
     snprintf(s_last_task, sizeof(s_last_task), "%s", parsed.task);
+    snprintf(s_last_question, sizeof(s_last_question), "%s", parsed.question);
+    s_have_document = true;
     snprintf(s_last, sizeof(s_last), "fetched, state=%s", passport_work_state_name(parsed.state));
 
     if (!passport_app_work_feed(document)) {
         s_failures++;
         return;
     }
-    if (changed) {
+    if (state_changed) {
         ESP_LOGI(TAG, "工作状态变为 %s: %s", passport_work_state_name(parsed.state), parsed.task);
+    }
+
+    const uint8_t mode = passport_config_current()->notify_mode;
+    const passport_work_announcement_t announcement =
+        passport_work_announce(announce, parsed.state, mode);
+    if (announcement != PASSPORT_WORK_ANNOUNCE_NONE) {
+        // Blocking, and this is the right task for it: the microphone is closed by the audio
+        // arbiter for the duration, so a poll that arrives during a chime cannot open it.
+        passport_notify_play(announcement);
     }
 }
 

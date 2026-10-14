@@ -16,6 +16,8 @@ idf_component_register(
          "passport_qr.c"
          "passport_utf8.c"
          "passport_voice.c"
+         "passport_notify.c"
+         "passport_tone.c"
          "passport_work.c"
          "passport_work_client.c"
          "passport_wifi.c"
