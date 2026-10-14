@@ -23,14 +23,18 @@
 #include "esp_app_desc.h"
 #include "esp_console.h"
 #include "esp_heap_caps.h"
+#include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "lvgl.h"
+#include "passport_app.h"
 #include "passport_audio.h"
 #include "passport_config.h"
 #include "passport_config_store.h"
 #include "passport_http.h"
 #include "passport_json.h"
+#include "passport_fonts.h"
+#include "passport_utf8.h"
 #include "passport_wifi.h"
 
 #define CLI_NAME_MAX 96
@@ -731,6 +735,155 @@ static int cmd_llm(int argc, char **argv)
     return (res.status == 200) ? 0 : 1;
 }
 
+// The conversation-text probe. Written as escapes so the console never has to accept
+// non-ASCII input, which it does unreliably. The emoji is a deliberate negative control:
+// it lies outside the CJK font's coverage, so a check that reports zero missing glyphs
+// would be reporting nothing at all.
+#define FONT_PROBE "\xE4\xB8\xAD\xE6\x96\x87\xEF\xBC\x8C ABC 123\xE3\x80\x82\xF0\x9F\x98\x80"
+
+// The application's palette, used to tell text from everything that is not text in a
+// snapshot: the panel, the screen behind its rounded corners, and the accent bar.
+#define PANEL_RGB565  0x18233A
+#define SCREEN_RGB565 0x101828
+#define ACCENT_RGB565 0x4D6BFE
+
+static int cmd_font(int argc, char **argv)
+{
+    if (argc < 2 || (strcmp(argv[1], "probe") != 0 && strcmp(argv[1], "shot") != 0 &&
+                     strcmp(argv[1], "check") != 0)) {
+        printf("usage: font <probe|check|shot>\n");
+        printf("  probe   report coverage for a fixed Chinese sample and show it\n");
+        printf("  check   report coverage for the text actually on the display\n");
+        printf("  shot    snapshot the conversation panel and print its ink as ASCII art\n");
+        return 1;
+    }
+
+    if (strcmp(argv[1], "check") == 0) {
+        // Check what is really on the screen rather than a sample someone chose. A probe
+        // built from characters the font happens to include will pass while the model's
+        // actual answer renders as empty placeholder boxes.
+        if (!bsp_lvgl_lock(1000)) {
+            printf("font check: could not take the LVGL lock\n");
+            return 1;
+        }
+        char copy[256];
+        copy[0] = '\0';
+        const lv_font_t *font = passport_font_body();
+        lv_obj_t *label = resolve("chat/bubble");
+        if (label != NULL) {
+            const char *text = lv_label_get_text(label);
+            if (text != NULL) {
+                snprintf(copy, sizeof(copy), "%s", text);
+            }
+            const lv_font_t *active = lv_obj_get_style_text_font(label, LV_PART_MAIN);
+            if (active != NULL) {
+                font = active;
+            }
+        }
+        bsp_lvgl_unlock();
+
+        if (copy[0] == '\0') {
+            printf("font check: the conversation bubble is empty\n");
+            return 1;
+        }
+        char report[256];
+        const int missing = passport_font_check(font, copy, report, sizeof(report));
+        printf("font check: %u code points on screen; %d have no real glyph\n",
+               (unsigned)passport_utf8_count(copy), missing);
+        printf("  text   : %s\n", copy);
+        printf("  missing: %s\n", (report[0] != '\0') ? report : "(none)");
+        return (missing == 0) ? 0 : 1;
+    }
+
+    if (strcmp(argv[1], "probe") == 0) {
+        char report[256];
+        const int missing = passport_font_check(passport_font_body(), FONT_PROBE, report,
+                                                sizeof(report));
+        printf("font probe: sample is %u code points; %d have no real glyph\n",
+               (unsigned)passport_utf8_count(FONT_PROBE), missing);
+        printf("  missing: %s\n", (report[0] != '\0') ? report : "(none)");
+
+        passport_app_show_reply(FONT_PROBE);
+        printf("  sample written to the conversation bubble; read it back with"
+               " \"ui get chat/bubble\"\n");
+        return (missing == 0) ? 0 : 1;
+    }
+
+    // Snapshot the panel rather than the label: the label is transparent, so its
+    // snapshot would have no background to compare ink against.
+    if (!bsp_lvgl_lock(2000)) {
+        printf("font shot: could not take the LVGL lock\n");
+        return 1;
+    }
+    lv_obj_t *panel = resolve("chat");
+    if (panel == NULL) {
+        bsp_lvgl_unlock();
+        printf("font shot: no object named \"chat\" on the active screen\n");
+        return 1;
+    }
+
+    // The panel is far larger than LVGL's own memory pool, which is where
+    // lv_snapshot_take() would try to allocate the image — that is why it failed here.
+    // The buffer is therefore provided from the system heap instead.
+    const uint32_t width = (uint32_t)lv_obj_get_width(panel);
+    const uint32_t height = (uint32_t)lv_obj_get_height(panel);
+    const uint32_t stride = lv_draw_buf_width_to_stride(width, LV_COLOR_FORMAT_RGB565);
+    const size_t data_size = (size_t)stride * (size_t)height;
+
+    void *pixels = heap_caps_aligned_alloc(64u, data_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (pixels == NULL) {
+        bsp_lvgl_unlock();
+        printf("font shot: could not allocate %u B for the snapshot\n", (unsigned)data_size);
+        return 1;
+    }
+
+    lv_draw_buf_t canvas;
+    if (lv_draw_buf_init(&canvas, width, height, LV_COLOR_FORMAT_RGB565, stride, pixels,
+                         (uint32_t)data_size) != LV_RESULT_OK ||
+        lv_snapshot_take_to_draw_buf(panel, LV_COLOR_FORMAT_RGB565, &canvas) != LV_RESULT_OK) {
+        heap_caps_free(pixels);
+        bsp_lvgl_unlock();
+        printf("font shot: the snapshot could not be rendered\n");
+        return 1;
+    }
+
+    const uint16_t background = lv_color_to_u16(lv_color_hex(PANEL_RGB565));
+    const uint16_t screen_bg = lv_color_to_u16(lv_color_hex(SCREEN_RGB565));
+    const uint16_t accent = lv_color_to_u16(lv_color_hex(ACCENT_RGB565));
+
+    // Text is anything that is not a known non-text colour; antialiased edges therefore
+    // count as ink, which is what makes the shapes below legible.
+    #define IS_INK(px) ((px) != background && (px) != screen_bg && (px) != accent)
+
+    printf("font shot: %ux%u RGB565, stride %u, %u B from the system heap\n", (unsigned)width,
+           (unsigned)height, (unsigned)stride, (unsigned)data_size);
+
+    for (uint32_t y = 0u; y < height; y++) {
+        const uint16_t *row = (const uint16_t *)((const uint8_t *)pixels + ((size_t)y * stride));
+        bool has_ink = false;
+        for (uint32_t x = 6u; x < width; x++) {   // skip the accent bar
+            if (IS_INK(row[x])) {
+                has_ink = true;
+                break;
+            }
+        }
+        if (!has_ink) {
+            continue;   // skip the empty bands between the panel edge and the text
+        }
+        char line[320];
+        int used = 0;
+        for (uint32_t x = 6u; x < width && used < (int)sizeof(line) - 2; x++) {
+            line[used++] = IS_INK(row[x]) ? '#' : '.';
+        }
+        line[used] = '\0';
+        printf("%s\n", line);
+    }
+
+    heap_caps_free(pixels);
+    bsp_lvgl_unlock();
+    return 0;
+}
+
 static int cmd_wifi(int argc, char **argv)
 {
     if (argc < 2) {
@@ -964,6 +1117,7 @@ esp_err_t passport_cli_start(void)
     register_command("mem", "Print heap, largest free block, and the LVGL pool", &cmd_mem);
     register_command("net", "HTTPS transport: net probe <url>", &cmd_net);
     register_command("llm", "Language model: llm probe | llm ask <text>", &cmd_llm);
+    register_command("font", "Text font: font probe | font shot", &cmd_font);
     register_command("wifi", "Wi-Fi station: status | scan | connect [ms] | disconnect", &cmd_wifi);
     register_command("config", "Configuration: list | get | set | save | reset", &cmd_config);
     register_command("audio", "Audio path: status | tone [ms] | loopback [ms] | mute-check", &cmd_audio);

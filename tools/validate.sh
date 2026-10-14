@@ -45,6 +45,10 @@ run_static_checks() {
         -o "${test_dir}/test_passport_json"
     "${test_dir}/test_passport_json"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_passport_utf8.c main/passport_utf8.c \
+        -o "${test_dir}/test_passport_utf8"
+    "${test_dir}/test_passport_utf8"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_demo_navigation.c main/demo_navigation.c \
         -o "${test_dir}/test_demo_navigation"
     "${test_dir}/test_demo_navigation"

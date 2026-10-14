@@ -30,6 +30,16 @@ CONFIG_LV_MEM_SIZE_KILOBYTES=24
 # 控件命名:串口控制台按名字寻址屏幕元素,名字与屏幕上显示的文字一一对应。
 CONFIG_LV_USE_OBJ_NAME=y
 
+# --- 字体 ---
+# 中文必须能显示。默认的 Montserrat 没有任何中日韩字形,而 UTF-8 与"构建成功"
+# 都不能证明字形存在。这个内置子集随 LVGL 一起提供(Source Han Sans SC,OFL),
+# 编译后约占 1.2 MB flash;应用分区还剩约 6.5 MB,预算足够。
+CONFIG_LV_FONT_SOURCE_HAN_SANS_SC_16_CJK=y
+# 保留占位符字形,好让缺失的字形看得见,而不是变成空白。
+CONFIG_LV_USE_FONT_PLACEHOLDER=y
+# 允许把控件渲染成图,用于在真机上取得"字形确实被光栅化"的证据。
+CONFIG_LV_USE_SNAPSHOT=y
+
 # --- TLS / HTTPS 客户端 ---
 # 证书包:用于校验服务端证书。为了让连接"成功"而关闭校验是不可接受的。
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y

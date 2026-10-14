@@ -25,7 +25,9 @@
 #include "lvgl.h"
 #include "passport_audio.h"
 #include "passport_chat.h"
+#include "passport_fonts.h"
 #include "passport_pet.h"
+#include "passport_utf8.h"
 
 static const char *TAG = "passport_app";
 
@@ -38,15 +40,28 @@ static const char *TAG = "passport_app";
 
 #define BATTERY_POLL_MS 5000
 #define REACT_MS        1400
-// The bubble shows roughly three wrapped lines at this font and width. Longer answers
-// are cut for display; the conversation screen that scrolls is a later milestone.
-#define BUBBLE_MAX      150
+// The bubble shows roughly four wrapped lines at this font and width. The limit is in
+// bytes but is always applied on a character boundary: cutting a Chinese answer by byte
+// count alone would split a character, and the invalid tail renders as nothing at all.
+#define BUBBLE_MAX      100
 
-// What pressing OK asks. It stays a constant until the configuration grows a prompt
-// field, which the web console milestone will want. Kept in English because the
-// display font still has no CJK glyphs: a Chinese answer would render as blank boxes
-// until the pixel font work lands, which this milestone records as a prerequisite.
-#define DEFAULT_PROMPT  "Say hello in one short sentence."
+// What pressing OK asks. Chinese now that the display can actually render it: the
+// default prompt is the product's own language, and a Chinese answer is also the honest
+// test of the font, since an English-only sample would pass with no CJK glyphs at all.
+#define DEFAULT_PROMPT  "用一句话跟我打个招呼"
+
+// One line the pet says for each mood. Short, because the bubble is small.
+static const char *const MOOD_LINES[PASSPORT_PET_MOOD_COUNT] = {
+    [PASSPORT_PET_IDLE] = "你好,按 OK 开始",
+    [PASSPORT_PET_CURIOUS] = "刚刚是什么?",
+    [PASSPORT_PET_LISTENING] = "我在听。",
+    [PASSPORT_PET_THINKING] = "让我想想...",
+    [PASSPORT_PET_WORKING] = "正在处理。",
+    [PASSPORT_PET_SPEAKING] = "我找到了这个。",
+    [PASSPORT_PET_HAPPY] = "好了!",
+    [PASSPORT_PET_SLEEPING] = "Zzz...",
+    [PASSPORT_PET_DISTRESSED] = "出了点问题。",
+};
 
 static lv_obj_t *s_screen;
 static lv_obj_t *s_battery;
@@ -56,19 +71,6 @@ static lv_obj_t *s_hint;
 static TaskHandle_t s_task;
 static volatile bool s_running;
 static bool s_sleeping;
-
-// One line the pet says for each mood. Short, because the bubble is small.
-static const char *const MOOD_LINES[PASSPORT_PET_MOOD_COUNT] = {
-    [PASSPORT_PET_IDLE] = "Hi. Press OK.",
-    [PASSPORT_PET_CURIOUS] = "What was that?",
-    [PASSPORT_PET_LISTENING] = "I am listening.",
-    [PASSPORT_PET_THINKING] = "Let me think.",
-    [PASSPORT_PET_WORKING] = "Working on it.",
-    [PASSPORT_PET_SPEAKING] = "Here is what I found.",
-    [PASSPORT_PET_HAPPY] = "Done!",
-    [PASSPORT_PET_SLEEPING] = "Zzz...",
-    [PASSPORT_PET_DISTRESSED] = "Something went wrong.",
-};
 
 // --- small LVGL helpers -----------------------------------------------------
 
@@ -140,8 +142,9 @@ static void build_home(void)
     lv_obj_set_name(panel, "chat");
     lv_obj_set_style_radius(panel, 6, 0);
     plain(panel, 0, 8, 3, 74, APP_ACCENT);
-    s_bubble = label(panel, 12, 10, &lv_font_montserrat_14, APP_PAPER, "bubble");
+    s_bubble = label(panel, 12, 10, passport_font_body(), APP_PAPER, "bubble");
     lv_obj_set_width(s_bubble, 190);
+    lv_obj_set_height(s_bubble, 68);   // clip rather than spill out of the panel
     lv_label_set_long_mode(s_bubble, LV_LABEL_LONG_WRAP);
 
     // The pet, then the line that names its current expression. The mood label is
@@ -154,7 +157,7 @@ static void build_home(void)
     plain(s_screen, 0, 232, 240, 3, APP_ACCENT);
 
     s_hint = label(s_screen, 10, 244, &lv_font_montserrat_14, APP_MUTED, "hint");
-    lv_label_set_text(s_hint, "OK: ask    hold OK: standby");
+    lv_label_set_text(s_hint, "OK:提问    长按OK:待机");
 
     set_mood(PASSPORT_PET_IDLE, 0);
     lv_screen_load(s_screen);
@@ -201,6 +204,9 @@ esp_err_t passport_app_start(void)
         ESP_LOGE(TAG, "无法获取 LVGL 锁,应用未启动");
         return ESP_ERR_TIMEOUT;
     }
+    // Fonts first: every label created below selects one, and the conversation text
+    // must already point at the CJK-capable face.
+    passport_fonts_init();
     build_home();
     bsp_lvgl_unlock();
 
@@ -300,7 +306,9 @@ void passport_app_show_reply(const char *text)
     // answer has to go in after it or it would be overwritten by "Here is what I found."
     set_mood(PASSPORT_PET_SPEAKING, 2500u);
     char shown[BUBBLE_MAX];
-    snprintf(shown, sizeof(shown), "%s", text);
+    const size_t keep = passport_utf8_truncate(text, sizeof(shown) - 1u);
+    memcpy(shown, text, keep);
+    shown[keep] = '\0';
     set_bubble(shown);
     bsp_lvgl_unlock();
 }

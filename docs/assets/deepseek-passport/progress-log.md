@@ -19,6 +19,62 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 12: the font is wired in and measured — the built-in subset is not enough
+
+**Milestone:** the display renders Chinese through a font the application selects, and
+the firmware now carries an instrument that measures glyph coverage on the device. The
+measurement says the font that ships with LVGL cannot carry this product's conversation.
+
+### What was built
+
+`passport_fonts` selects Source Han Sans SC 16 for conversation text, with Montserrat 14
+attached as a fallback in the pattern the repository's font guide prescribes, and it
+exposes the guide's own glyph check. `passport_utf8` handles code points and, more to the
+point, truncation on a character boundary: the reply buffer was cut by byte count, which
+can split a Chinese character and leave an invalid tail that renders as nothing at all.
+
+The console gained `font probe` (a fixed Chinese sample), `font check` (the text actually
+on the display), and `font shot` (an ASCII rendering of the conversation panel). The last
+one needed two facts discovered the hard way: LVGL allocates a snapshot from its own 24 KB
+pool, so the panel image is taken with a buffer from the system heap instead; and the
+panel's own colours must be excluded from the ink test, or the accent bar and the rounded
+corners read as text.
+
+The interface text moved to Chinese, which the font work finally allows.
+
+### The measurement, and what it corrects
+
+`font probe` on the sample the repository's guide suggests **passes**: only the
+deliberately included emoji is missing. That is a trap. Those sample characters are the
+ones LVGL's own font was built around.
+
+`font check` on the model's real answer says something different. One reply contained 22
+code points, of which **8 had no real glyph**:
+
+```text
+missing: U+563F U+5174 U+89C1 U+FF01 U+4E48 U+5E2E U+5417 U+FF1F
+```
+
+Those are ordinary words, and — worse for a chat interface — the full-width exclamation
+and question marks. The ASCII snapshot of the panel shows the consequence directly:
+hollow placeholder boxes where those characters should be. The verbatim reply and the
+missing list are recorded in the Chinese version of this log.
+
+So the built-in subset is a curated sample for LVGL's own tests, not a general Chinese
+font, and the conversation screen is not yet honest in Chinese. The instrument that proved
+it is now part of the firmware, and the fix is the guide's Option B: generate an
+application subset from the OFL Source Han Sans SC file that already ships with LVGL, from
+a real character inventory, with both the inventory and the conversion command under
+version control.
+
+### Honest status
+
+Coverage infrastructure PASS. Visual rendering confirmed by snapshot for the characters
+that do have glyphs. **The font asset itself FAILS for real replies**, which is a
+deliberately reported failure rather than a passed probe.
+
+---
+
 ## 2026-10-14 — Session 11: the button asks, the screen answers
 
 **Milestone:** pressing OK now holds a conversation with the model, and the answer is
