@@ -17,6 +17,76 @@
 
 ---
 
+## 2026-10-14 —— 第 21 次会话：工作模式的文档格式与按键规则,已在真机验证
+
+**里程碑：** 工作模式的**设备侧**已经存在。桥接服务还没写,所以这里验证的是**协议与交互规则**,
+不是一次真实的会话。
+
+### 已构建的内容
+
+`passport_work` 解析一份状态文档,并把按键翻译成少数几种回答。
+
+**这份文档是刻意做成扁平结构的:**
+
+```json
+{"task":"indexing","progress":42,"state":"running",
+ "question":"Which branch?","option0":"main","option1":"develop","selected":0}
+```
+
+选项用**编号字段**而不是 JSON 数组。这是与桥接服务之间的**契约**,不是疏忽:设备端的读取器是
+几百字节而不是一个解析器,而编号字段**不需要分隔符转义**,所以一个含逗号或引号的 branch 名字
+不可能破坏这个列表。最多读四个选项,正是面板能用高亮行显示的数量。
+
+有四个决定被写进代码而不是留给调用方:
+
+- **字段缺失不等于零。** `progress` 缺失读作 -1 并显示为未知;若读成 0,就会声称任务卡在零进度。
+  这就是整数读取器要报告"这个键是否存在"的原因。
+- **越界的数字是钳制而不是拒绝**:一个拒收 250 的进度条会什么都不显示,那比显示满更糟。
+- **选项列表在第一个空缺处结束**,因此孤立的 `option3` 不会单独出现。
+- **既没有 task 也没有 question 的文档会被拒绝**,保留上一份视图,而不是把正在显示有用内容的屏幕
+  清空。
+
+按键规则:选择会环绕,确认只在"有等待中的问题且它带选项"时才有效,而且**一个问题只接受一个答案**
+——再按一次会被拒绝。
+
+### 真机验证
+
+```text
+work feed {"task":"indexing repository","progress":42,"state":"running"}
+work: state=running progress=42% task="indexing repository"
+
+work feed {"task":"deploy","state":"waiting","question":"Which branch?",
+           "option0":"main","option1":"develop","option2":"release","selected":0}
+work: state=waiting progress=-1% task="deploy"
+work: question="Which branch?"
+  > option0: main
+    option1: develop
+    option2: release
+
+work key down        -> 选择移动
+  > option1: develop
+work key ok          -> answer -> develop
+work key ok          -> nothing to do in state waiting      ← 一个问题一个答案
+```
+
+### 一个只有真机才能抓到的 bug
+
+第一次的结果是 `task="indexing"` 与 `progress=-1%`:文档在**第一个空格**处被截断了。控制台按空格
+切分参数,而 `work feed` 只把第一个参数交给了解析器,于是任务名丢了后半段,后面所有字段都被丢弃。
+**这看起来和"解析器忽略 progress 与 state"一模一样。**
+
+整个过程宿主测试都是通过的,因为它们把文档当作**一个字符串**传入。只有真机才走了控制台自己的
+切分逻辑。现在 `work feed` 会把参数重新拼接——`llm ask` 早先因为同样的原因已经这么做了。
+
+这条教训值得留着:**宿主测试通过只说明逻辑对,不说明设备接收输入的方式对。**
+
+### 状态
+
+九个宿主测试全部通过(含新增的工作模式测试);固件构建通过;上面的记录来自真机,设备在修复了上一次
+会话的重启循环之后运行正常。
+
+---
+
 ## 2026-10-14 —— 第 20 次会话：我造成的重启循环、它的修复,以及现在已验证的部分
 
 **状态：** 设备恢复正常。上一次会话遗留的两项检查,一项通过,另一项未通过,原因已实测。

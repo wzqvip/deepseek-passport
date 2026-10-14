@@ -38,6 +38,7 @@
 #include "passport_portal.h"
 #include "passport_provision.h"
 #include "passport_qr.h"
+#include "passport_work.h"
 #include "passport_wifi.h"
 
 #define CLI_NAME_MAX 96
@@ -924,6 +925,131 @@ static int cmd_font(int argc, char **argv)
     return 0;
 }
 
+// Work mode over the console. The view is static so a document can be fed and then navigated
+// across separate commands, which is how the interaction rules are checked on the device
+// rather than only in the host test.
+static passport_work_view_t s_work_view;
+static bool s_work_loaded;
+
+static void print_work_view(void)
+{
+    printf("work: state=%s progress=%d%% task=\"%s\"\n", passport_work_state_name(s_work_view.state),
+           s_work_view.progress, s_work_view.task);
+    if (s_work_view.option_count > 0) {
+        printf("work: question=\"%s\"\n", s_work_view.question);
+        for (int i = 0; i < s_work_view.option_count; i++) {
+            printf("  %s option%d: %s\n", (i == s_work_view.selected) ? ">" : " ", i,
+                   s_work_view.options[i]);
+        }
+    }
+    if (s_work_view.answered) {
+        printf("work: this question has already been answered\n");
+    }
+}
+
+static int cmd_work(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("usage: work <feed <json>|key <up|down|ok>|show>\n");
+        printf("  feed <json>  hand the device a status document, as the bridge would\n");
+        printf("  key <k>      press a button against the current document\n");
+        printf("  show         print what the device is showing for work\n");
+        return 1;
+    }
+
+    if (strcmp(argv[1], "feed") == 0) {
+        if (argc < 3) {
+            printf("usage: work feed {\"task\":\"...\",\"progress\":42,\"state\":\"running\"}\n");
+            return 1;
+        }
+        // The console splits arguments on spaces, and a status document contains them, so the
+        // remaining arguments are joined back together. Passing only argv[2] truncated the
+        // document at its first space: the task lost its tail and every later field was
+        // discarded, which looked exactly like a parser that ignores progress and state.
+        static char document[512];
+        size_t used = 0u;
+        document[0] = '\0';
+        for (int i = 2; i < argc; i++) {
+            const size_t n = strlen(argv[i]);
+            if (used + n + 2u >= sizeof(document)) {
+                break;
+            }
+            if (used > 0u) {
+                document[used++] = ' ';
+            }
+            memcpy(document + used, argv[i], n);
+            used += n;
+            document[used] = '\0';
+        }
+        if (!passport_work_parse(document, &s_work_view)) {
+            printf("work feed: the document names neither a task nor a question;"
+                   " the previous view is kept\n");
+            return 1;
+        }
+        s_work_loaded = true;
+        print_work_view();
+        if (passport_work_awaiting_answer(&s_work_view)) {
+            printf("work: a question is waiting; use \"work key down\" then \"work key ok\"\n");
+        }
+        return 0;
+    }
+
+    if (strcmp(argv[1], "key") == 0) {
+        if (!s_work_loaded) {
+            printf("work key: feed a document first\n");
+            return 1;
+        }
+        if (argc < 3) {
+            printf("usage: work key <up|down|ok>\n");
+            return 1;
+        }
+        passport_work_key_t key = PASSPORT_WORK_KEY_NONE;
+        if (strcmp(argv[2], "up") == 0) {
+            key = PASSPORT_WORK_KEY_UP;
+        } else if (strcmp(argv[2], "down") == 0) {
+            key = PASSPORT_WORK_KEY_DOWN;
+        } else if (strcmp(argv[2], "ok") == 0) {
+            key = PASSPORT_WORK_KEY_CONFIRM;
+        } else {
+            printf("work key: unknown key \"%s\"\n", argv[2]);
+            return 1;
+        }
+
+        const passport_work_action_t action = passport_work_key(&s_work_view, key);
+        switch (action) {
+        case PASSPORT_WORK_ACT_REDRAW:
+            printf("work key: selection moved\n");
+            break;
+        case PASSPORT_WORK_ACT_SEND_ANSWER:
+            // The bridge is not wired yet, so the answer is printed rather than posted. The
+            // exact bytes are what the bridge will receive.
+            printf("work key: answer -> %s\n", s_work_view.options[s_work_view.selected]);
+            break;
+        case PASSPORT_WORK_ACT_CHIME:
+            printf("work key: chime\n");
+            break;
+        default:
+            printf("work key: nothing to do in state %s\n",
+                   passport_work_state_name(s_work_view.state));
+            break;
+        }
+        print_work_view();
+        return 0;
+    }
+
+    if (strcmp(argv[1], "show") == 0) {
+        if (!s_work_loaded) {
+            printf("work: no document has been fed\n");
+            return 1;
+        }
+        print_work_view();
+        return 0;
+    }
+
+    printf("work: unknown subcommand \"%s\"\n", argv[1]);
+    return 1;
+}
+
 static int cmd_prov(int argc, char **argv)
 {
     if (argc < 2) {
@@ -1260,7 +1386,8 @@ esp_err_t passport_cli_start(void)
     register_command("llm", "Language model: llm probe | llm ask <text>", &cmd_llm);
     register_command("font", "Text font: font probe | font shot", &cmd_font);
     register_command("wifi", "Wi-Fi station: status | scan | connect [ms] | disconnect", &cmd_wifi);
-    register_command("prov", "Setup portal: status | start | stop | page [route] | form <k=v>", &cmd_prov);
+    register_command("prov", "Setup portal: status | start | stop | page [route] | qr | form <k=v>", &cmd_prov);
+    register_command("work", "Work mode: feed <json> | key <up|down|ok> | show", &cmd_work);
     register_command("config", "Configuration: list | get | set | save | reset", &cmd_config);
     register_command("audio", "Audio path: status | tone [ms] | loopback [ms] | mute-check", &cmd_audio);
     register_command("ui", "Screen inspection: tree | names | get | tap | key | screen", &cmd_ui);

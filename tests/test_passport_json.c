@@ -124,5 +124,36 @@ int main(void)
     assert(passport_json_len("abc") == 3u);
     assert(passport_json_len(NULL) == 0u);
 
+    // --- integers -----------------------------------------------------------
+    // The `found` flag is the point: a missing field and a value of zero are different states,
+    // and a caller that cannot tell them apart shows a stalled task when the field was absent.
+    bool found = false;
+    assert(passport_json_int("{\"progress\":42}", 15u, "progress", &found) == 42);
+    assert(found);
+    assert(passport_json_int("{\"progress\":0}", 14u, "progress", &found) == 0);
+    assert(found);   // present, and zero
+    assert(passport_json_int("{\"other\":1}", 11u, "progress", &found) == 0);
+    assert(!found);  // absent
+    assert(passport_json_int("{\"progress\":-7}", 15u, "progress", &found) == -7);
+    assert(found);
+    assert(passport_json_int("{\"progress\": \"12\"}", 19u, "progress", &found) == 0);
+    assert(!found);  // a string is not an integer
+    assert(passport_json_int("{\"progress\":null}", 17u, "progress", &found) == 0);
+    assert(!found);
+    assert(passport_json_int("{\"progress\" : 7 }", 18u, "progress", &found) == 7);
+    assert(found);
+    // The key is matched with its quotes, so a longer key does not answer for a shorter one.
+    assert(passport_json_int("{\"progress_x\":9}", 17u, "progress", &found) == 0);
+    assert(!found);
+    // A malformed number stops at the first non-digit rather than running away.
+    assert(passport_json_int("{\"n\":12x}", 11u, "n", &found) == 12);
+    assert(found);
+    // Invalid arguments.
+    assert(passport_json_int(NULL, 5u, "n", &found) == 0);
+    assert(!found);
+    assert(passport_json_int("{\"n\":1}", 7u, NULL, &found) == 0);
+    // A NULL `found` is allowed.
+    assert(passport_json_int("{\"n\":5}", 7u, "n", NULL) == 5);
+
     return 0;
 }

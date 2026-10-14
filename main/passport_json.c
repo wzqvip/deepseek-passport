@@ -3,6 +3,61 @@
 
 #include <string.h>
 
+// Defined below; declared here because the integer reader above it needs it.
+static const char *find_key(const char *json, size_t len, const char *key, size_t key_len);
+
+int passport_json_int(const char *json, size_t json_len, const char *key, bool *found)
+{
+    if (found != NULL) {
+        *found = false;
+    }
+    if (json == NULL || key == NULL) {
+        return 0;
+    }
+
+    const char *at = find_key(json, json_len, key, strlen(key));
+    if (at == NULL) {
+        return 0;
+    }
+
+    const char *p = at + strlen(key) + 2u;
+    const char *end = json + json_len;
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
+        p++;
+    }
+    if (p >= end || *p != ':') {
+        return 0;
+    }
+    p++;
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
+        p++;
+    }
+
+    bool negative = false;
+    if (p < end && (*p == '-' || *p == '+')) {
+        negative = (*p == '-');
+        p++;
+    }
+
+    int value = 0;
+    bool digits = false;
+    while (p < end && *p >= '0' && *p <= '9') {
+        digits = true;
+        // Bounded so a malformed document cannot overflow the accumulator.
+        if (value < 1000000) {
+            value = value * 10 + (*p - '0');
+        }
+        p++;
+    }
+    if (!digits) {
+        return 0;   // a string, an object, or nothing at all
+    }
+    if (found != NULL) {
+        *found = true;
+    }
+    return negative ? -value : value;
+}
+
 size_t passport_json_len(const char *json)
 {
     return (json == NULL) ? 0u : strlen(json);

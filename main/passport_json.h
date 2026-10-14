@@ -39,3 +39,11 @@ passport_json_status_t passport_json_string(const char *json, size_t json_len,
 
 // Length of the JSON document, for callers that hold a NUL-terminated buffer.
 size_t passport_json_len(const char *json);
+
+// Read the integer value of the first `"key"` in `json[0..json_len)`.
+//
+// `found` reports whether the key was present at all, which matters when zero is a meaningful
+// value: a missing progress field and a progress of zero are different states, and a caller
+// that cannot tell them apart shows a stalled task when the field was simply absent.
+// Returns 0 when the key is missing or its value is not an integer.
+int passport_json_int(const char *json, size_t json_len, const char *key, bool *found);

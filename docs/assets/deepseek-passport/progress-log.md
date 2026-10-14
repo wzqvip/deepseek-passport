@@ -19,6 +19,83 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 21: work mode's document and button rules, verified on the device
+
+**Milestone:** the device half of work mode exists. The bridge is not written yet, so what is
+verified here is the protocol and the interaction rules, not a live session.
+
+### What was built
+
+`passport_work` parses a status document and turns button presses into one of a few answers.
+
+**The document is deliberately flat:**
+
+```json
+{"task":"indexing","progress":42,"state":"running",
+ "question":"Which branch?","option0":"main","option1":"develop","selected":0}
+```
+
+Options are numbered fields rather than a JSON array. That is a contract with the bridge, not
+an oversight: the device's reader is a few hundred bytes instead of a parser, and numbered
+fields need no delimiter escaping, so a branch name containing a comma or a quote cannot
+corrupt the list. Four options are read, which is what the panel can show with a highlighted
+row.
+
+Four decisions are encoded rather than left to the caller:
+
+- **A missing field is not a zero.** `progress` absent reads as -1 and shows as unknown, where
+  zero would claim the task is stalled at nothing. This is why the integer reader reports
+  whether the key was present.
+- **An out-of-range number is clamped, not rejected**: a progress bar that refuses 250 shows
+  nothing at all, which is worse than showing full.
+- **The option list ends at the first gap**, so a stray `option3` cannot appear on its own.
+- **A document that names neither a task nor a question is refused**, leaving the previous
+  view untouched rather than blanking a screen that was showing something useful.
+
+And the button rules: the selection wraps, confirm does nothing unless a question is waiting
+and has options, and **one question takes one answer** — a second press is refused.
+
+### Verified on the device
+
+```text
+work feed {"task":"indexing repository","progress":42,"state":"running"}
+work: state=running progress=42% task="indexing repository"
+
+work feed {"task":"deploy","state":"waiting","question":"Which branch?",
+           "option0":"main","option1":"develop","option2":"release","selected":0}
+work: state=waiting progress=-1% task="deploy"
+work: question="Which branch?"
+  > option0: main
+    option1: develop
+    option2: release
+
+work key down        -> selection moved
+  > option1: develop
+work key ok          -> answer -> develop
+work key ok          -> nothing to do in state waiting      <- one answer per question
+```
+
+### A device-only bug that the host tests could not have caught
+
+The first attempt showed `task="indexing"` and `progress=-1%`: the document had been truncated
+at its **first space**. The console splits arguments on spaces, and `work feed` was passing only
+its first argument to the parser, so the task lost its tail and every later field was discarded.
+That looked exactly like a parser that ignores `progress` and `state`.
+
+The host tests passed throughout, because they hand the document over as a single string. Only
+the device exercised the console's own splitting. `work feed` now joins its arguments, the same
+way `llm ask` already did for prompts.
+
+The lesson is worth keeping: a passing host test says the logic is right, not that the way the
+device receives the input is.
+
+### Status
+
+Nine host tests pass, including the new work test; firmware builds; the transcript above is
+from the device, and the device is running normally after the previous session's reboot loop.
+
+---
+
 ## 2026-10-14 — Session 20: the boot loop I caused, its fix, and what is verified now
 
 **Status:** the device is working again. One of last session's two pending checks passes; the
