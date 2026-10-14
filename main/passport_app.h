@@ -37,5 +37,14 @@ bool passport_app_work_feed(const char *json);
 passport_work_action_t passport_app_work_press(passport_work_key_t key);
 const passport_work_view_t *passport_app_work_current(void);
 
+// The join code as it was actually drawn, for a console check of the pixels rather than of the
+// encoder. Returns false when no code is currently rendered.
+//
+// This exists because a symbol can be perfect and still be unscannable: inverting the two colours
+// leaves a matrix that is correct cell for cell and cannot be read by any camera. Only the pixels
+// can tell you that.
+bool passport_app_qr_drawn(const uint16_t **pixels, int *side, int *scale, int *modules,
+                           int *quiet_zone);
+
 // Stop the worker and delete the UI. Called before teardown.
 void passport_app_stop(void);

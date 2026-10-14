@@ -200,6 +200,9 @@ static void build_home(void)
 static lv_image_dsc_t s_qr_dsc;
 static uint16_t *s_qr_pixels;
 static int s_qr_side;
+// The geometry the last render used, so the console can sample the drawn pixels by module.
+static int s_qr_scale;
+static int s_qr_modules;
 
 // Build the standard Wi-Fi join payload. The escaping rules for ';', ',' ':' and '\' are
 // not applied: the access point name and password are derived from the MAC, so they never
@@ -255,6 +258,9 @@ static int qr_render(void)
             s_qr_pixels[(size_t)y * (size_t)side + (size_t)x] = is_dark ? dark : light;
         }
     }
+
+    s_qr_scale = scale;
+    s_qr_modules = modules;
 
     s_qr_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
     s_qr_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
@@ -326,6 +332,32 @@ static void qr_reserve(void)
     } else {
         ESP_LOGE(TAG, "二维码缓冲分配失败(%d 字节)", side * side * 2);
     }
+}
+
+bool passport_app_qr_drawn(const uint16_t **pixels, int *side, int *scale, int *modules,
+                           int *quiet_zone)
+{
+    if (s_qr_pixels == NULL || s_qr_side <= 0) {
+        return false;
+    }
+    if (pixels != NULL) {
+        *pixels = s_qr_pixels;
+    }
+    if (side != NULL) {
+        *side = s_qr_side;
+    }
+    if (scale != NULL) {
+        *scale = s_qr_scale;
+    }
+    if (modules != NULL) {
+        *modules = s_qr_modules;
+    }
+    // The quiet zone is reported rather than duplicated: this project has twice been misled by a
+    // checker that kept its own copy of a constant, and the second time the copy was wrong.
+    if (quiet_zone != NULL) {
+        *quiet_zone = QR_QUIET_ZONE;
+    }
+    return true;
 }
 
 static void setup_refresh(void)

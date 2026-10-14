@@ -1440,6 +1440,105 @@ static int cmd_prov(int argc, char **argv)
         return 0;
     }
 
+    if (strcmp(sub, "pixels") == 0) {
+        // Sample the join code as it was actually drawn. The encoder's matrix is already checked
+        // against a reference implementation by `prov qr` and by the host tests; what this adds is
+        // the render path — the scale, the quiet zone and, the reason it exists, whether the two
+        // colours went the right way round. An inverted symbol is correct cell for cell and
+        // unscannable.
+        const uint16_t *pixels = NULL;
+        int side = 0;
+        int scale = 0;
+        int modules = 0;
+        int quiet = 0;
+        if (!passport_app_qr_drawn(&pixels, &side, &scale, &modules, &quiet)) {
+            printf("prov pixels: no join code is drawn; open the setup screen first\n");
+            return 1;
+        }
+        if (scale <= 0 || modules <= 0) {
+            printf("prov pixels: the render geometry was not recorded\n");
+            return 1;
+        }
+
+        // The symbol's own matrix, for comparison.
+        char payload[192];
+        snprintf(payload, sizeof(payload), "WIFI:T:WPA;S:%s;P:%s;;", passport_provision_ssid(),
+                 passport_provision_password());
+        passport_qr_t code;
+        if (!passport_qr_encode(payload, &code)) {
+            printf("prov pixels: the payload does not fit\n");
+            return 1;
+        }
+
+        unsigned dark = 0u;
+        unsigned total = 0u;
+        unsigned wrong = 0u;
+        const uint16_t dark_pixel = 0x0000u;   // black in RGB565
+        printf("prov pixels: %d px, scale %d, %d modules, quiet zone %d\n", side, scale, modules,
+               quiet);
+        for (int my = 0; my < modules; my++) {
+            for (int mx = 0; mx < modules; mx++) {
+                const int px = mx * scale + scale / 2;
+                const int py = my * scale + scale / 2;
+                const uint16_t sample = pixels[(size_t)py * (size_t)side + (size_t)px];
+                const bool is_dark = (sample == dark_pixel);
+                if (is_dark) {
+                    dark++;
+                }
+                total++;
+                // The expected colour: a module of the symbol, or the quiet zone around it.
+                const int cx = mx - quiet;
+                const int cy = my - quiet;
+                const bool inside = (cx >= 0 && cy >= 0 && cx < (int)code.size && cy < (int)code.size);
+                const bool expected_dark = inside && (code.modules[cy][cx] != 0u);
+                if (is_dark != expected_dark) {
+                    wrong++;
+                }
+            }
+        }
+        printf("prov pixels: %u of %u module centres are dark (%.0f%%), %u disagree with the symbol\n",
+               dark, total, total ? (100.0 * (double)dark / (double)total) : 0.0, wrong);
+        // Show the top-left corner as drawn and as encoded. A finder pattern is distinctive enough
+        // that a shift, an inversion or a stale buffer is obvious from seven rows.
+        printf("prov pixels: drawn top-left 7x7:\n");
+        for (int my = 0; my < 7 && my < modules; my++) {
+            char line[64];
+            int used = 0;
+            for (int mx = 0; mx < 7 && mx < modules; mx++) {
+                const int px = mx * scale + scale / 2;
+                const int py = my * scale + scale / 2;
+                line[used++] = (pixels[(size_t)py * (size_t)side + (size_t)px] == dark_pixel) ? '#' : '.';
+            }
+            line[used] = '\0';
+            printf("  %s\n", line);
+        }
+        printf("prov pixels: encoded top-left 7x7:\n");
+        for (int my = 0; my < 7; my++) {
+            char line[64];
+            int used = 0;
+            for (int mx = 0; mx < 7; mx++) {
+                const int cx = mx - quiet;
+                const int cy = my - quiet;
+                const bool inside = (cx >= 0 && cy >= 0 && cx < (int)code.size && cy < (int)code.size);
+                line[used++] = (inside && code.modules[cy][cx] != 0u) ? '#' : '.';
+            }
+            line[used] = '\0';
+            printf("  %s\n", line);
+        }
+        if (wrong != 0u) {
+            printf("prov pixels: MISMATCH - the drawn code is not the symbol the encoder produced\n");
+            return 1;
+        }
+        if (dark * 10u > total * 7u) {
+            // A QR symbol is roughly half dark; far more than that usually means the colours are
+            // inverted, which no cell-by-cell comparison would notice.
+            printf("prov pixels: WARNING - that is far more dark than a symbol should be;"
+                   " check the colours are not inverted\n");
+        }
+        printf("prov pixels: MATCH - the drawn pixels are the encoded symbol\n");
+        return 0;
+    }
+
     if (strcmp(sub, "form") == 0) {
         if (argc < 3) {
             printf("usage: prov form wifi_ssid=MyNet&llm_model=deepseek-chat\n");

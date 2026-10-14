@@ -19,6 +19,71 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 32: the join code verified at both levels
+
+**Milestone:** the code the device draws has been checked against an independent implementation, and the
+pixels it draws have been checked against its own encoder. What is left is a camera.
+
+### The symbol
+
+`tools/check_device_qr.py` reads the matrix `prov qr` prints, regenerates the same payload with the
+`qrcode` package for all eight masks, and compares cell for cell:
+
+```text
+device: version 3, 29 modules, states mask 2, matrix 29x29
+MATCH: the matrix is the reference symbol for fixture 'v3_wifi' under mask 2,
+       which is the mask the device states
+```
+
+The mask is the interesting part, and it is worth being precise about what this does and does not
+settle. It does **not** say which mask should win — that has never had an independent oracle, since the
+`segno` package disagreed with the specification about a padding byte when it was tried. What it says is
+that the matrix the device drew is a valid symbol for that payload **under the mask the device claims**,
+which is a property the reference implementation can confirm. The claims and the drawing agree.
+
+The payload comes from `make_qr_fixture.py`, which is the one place it is recorded, so nothing new was
+added and the captured matrix — which carries the hotspot password — is never committed.
+
+### The drawn pixels
+
+A correct symbol can still be unscannable: inverting the two colours leaves a matrix that is perfect
+cell for cell and unreadable by any camera. Only the pixels can tell you that, so `prov pixels` samples
+the centre of every module in the buffer that was actually painted and compares it with the encoder's
+matrix:
+
+```text
+prov pixels: 111 px, scale 3, 37 modules, quiet zone 4
+prov pixels: 419 of 1369 module centres are dark (31%), 0 disagree with the symbol
+prov pixels: MATCH - the drawn pixels are the encoded symbol
+```
+
+It also prints the top-left seven by seven as drawn and as encoded, which is what made the one failure
+below obvious in a single look. The dark fraction reads as 31% of the canvas, which looks wrong for a
+symbol that should be about half dark — and it is right: the canvas includes the four-module quiet
+ring, which is 528 of the 1369 centres and entirely light. The symbol area itself is **49.8% dark**,
+which is exactly what a QR symbol should be.
+
+### The checker was wrong first
+
+The first run reported 428 of 1369 centres disagreeing. The corner dump showed the drawn finder pattern
+shifted by exactly two modules, and the reason was in my checker rather than in the firmware: it
+hard-coded the quiet zone as two modules, and the application's is four. The application now **reports**
+its quiet zone to the console instead of the console keeping a copy.
+
+This is the third time in this project that a checker carrying its own copy of a constant produced a
+false failure — the other two were in Session 30, and one of those was a wrong conclusion about ESP-IDF
+that reached a protocol document. The pattern is consistent enough to name: **a checker that duplicates
+a constant is checking its copy, not the firmware.** The remedy each time was to ask the component that
+owns the value.
+
+### Not verified, and it is now a narrow question
+
+Whether a phone can read the code off this panel — the contrast, the size on a 240-pixel-wide screen,
+and whatever the glass does to the light. Everything up to the glass is now checked twice, by an
+independent implementation and against the device's own renderer.
+
+---
+
 ## 2026-10-14 — Session 31: an acceptance walkthrough, which found a crash and three other defects
 
 **Milestone:** the interface was walked the way a person would walk it, and it does not survive that
