@@ -19,6 +19,69 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 10: the decoder, and a real Chinese reply
+
+**Milestone:** the response path is complete — the model's answer is extracted and
+rendered, and it works in Chinese.
+
+### What was built
+
+`passport_json` decodes one string value out of a provider response, as pure C with a
+host test. Two properties are deliberate:
+
+- The key is matched **with its surrounding quotes**, so asking for `"content"` cannot
+  match inside `"reasoning_content"`. This matters: DeepSeek's thinking mode returns the
+  model's reasoning alongside the answer, and a naive substring search would feed
+  reasoning into the pet's speech bubble.
+- The decode is bounded and **truncation is reported together with the full length**,
+  so a caller learns how much it lost. This is the repository's own recorded lesson — a
+  fixed 4096-byte document meeting a 6971-byte response — turned into an API rather than
+  a comment.
+
+Escapes are handled, including `\uXXXX` to UTF-8. A code point outside the Basic
+Multilingual Plane becomes `?` rather than being guessed at, and the host test pins
+that decision.
+
+`llm ask <text>` posts a real question and prints the reply. Its response and answer
+buffers live on the heap, not the stack, because the console task's stack already has
+to hold a TLS handshake.
+
+### Verified on the device
+
+```text
+llm ask say "hi" in JSON
+  1740 ms, 492 B response, largest free block with the session live: 64 KiB
+  reply: a fenced JSON snippet          <- embedded quotes and newlines survived
+
+llm ask reply in Chinese, one short sentence: who are you
+  1859 ms, 518 B response
+  reply: a correct Chinese sentence (the verbatim text is in the Chinese version of
+         this log, so that this file stays English-only as the conventions require)
+  CJK characters in the reply line: 19
+```
+
+### A measurement artifact I nearly recorded as a bug
+
+The first Chinese capture showed `reply: ??????????????`. That was my own port reader
+decoding bytes without setting an encoding — the firmware was fine. Reading the raw
+bytes and decoding them as UTF-8 showed the correct text. Worth writing down: I nearly
+logged a firmware defect that did not exist, and only checking the capture path
+prevented it.
+
+The practical TLS-live figure for a conversation turn is **64 KiB** of largest free
+block — 68 KiB for a bare probe, minus the ask buffers — which is the budget the audio
+pipeline will have to fit beside.
+
+### Known limitation
+
+Typing non-ASCII into the serial console is unreliable: one Chinese prompt was rejected
+by the console's line reader, another was accepted. The product path for Chinese input
+is speech, not typed console input, so this is a tooling limitation rather than a
+product one — but it means Chinese prompts should be exercised through the voice path
+rather than assumed to work over the console.
+
+---
+
 ## 2026-10-14 — Session 9: the device talks to DeepSeek, and the TLS number arrives
 
 **Milestone:** the provider path is proven end to end, and the measurement the

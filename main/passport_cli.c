@@ -30,6 +30,7 @@
 #include "passport_config.h"
 #include "passport_config_store.h"
 #include "passport_http.h"
+#include "passport_json.h"
 #include "passport_wifi.h"
 
 #define CLI_NAME_MAX 96
@@ -548,19 +549,49 @@ static int cmd_net(int argc, char **argv)
     return 0;
 }
 
+// Escape a user prompt so it can be embedded in a JSON string body.
+static void json_escape(const char *in, char *out, size_t out_size)
+{
+    size_t j = 0u;
+    for (size_t i = 0u; in[i] != '\0' && j + 2u < out_size; i++) {
+        const char c = in[i];
+        if (c == '"' || c == '\\') {
+            out[j++] = '\\';
+            out[j++] = c;
+        } else if (c == '\n') {
+            out[j++] = '\\';
+            out[j++] = 'n';
+        } else if ((unsigned char)c < 0x20u) {
+            out[j++] = ' ';
+        } else {
+            out[j++] = c;
+        }
+    }
+    out[j] = '\0';
+}
+
+// Build "<base>/chat/completions", leaving an already-complete endpoint alone.
+static void build_endpoint(const char *base, char *out, size_t out_size)
+{
+    if (strstr(base, "/chat/completions") != NULL) {
+        snprintf(out, out_size, "%s", base);
+    } else {
+        snprintf(out, out_size, "%s/chat/completions", base);
+    }
+}
+
 static int cmd_llm(int argc, char **argv)
 {
-    if (argc < 2 || strcmp(argv[1], "probe") != 0) {
-        printf("usage: llm probe\n");
-        printf("  POST a minimal chat completion to the configured endpoint.\n");
-        printf("  Without a key the server answers 401, which still proves DNS,\n");
-        printf("  the TLS handshake, the HTTP exchange, and the response path.\n");
+    if (argc < 2 || (strcmp(argv[1], "probe") != 0 && strcmp(argv[1], "ask") != 0)) {
+        printf("usage: llm <probe|ask <text>>\n");
+        printf("  probe        POST a minimal chat completion; a 401 still proves the transport\n");
+        printf("  ask <text>   ask a question and print the reply\n");
         return 1;
     }
 
     const passport_config_t *cfg = passport_config_current();
     if (cfg->llm_base_url[0] == '\0' || cfg->llm_model[0] == '\0') {
-        printf("llm probe: set the endpoint and model first:\n");
+        printf("llm: set the endpoint and model first:\n");
         printf("  config set llm_base_url https://api.deepseek.com\n");
         printf("  config set llm_model <model>\n");
         printf("  config set llm_api_key <key>\n");
@@ -568,9 +599,94 @@ static int cmd_llm(int argc, char **argv)
     }
 
     char url[192];
-    snprintf(url, sizeof(url), "%s/chat/completions", cfg->llm_base_url);
-    if (strstr(cfg->llm_base_url, "/chat/completions") != NULL) {
-        snprintf(url, sizeof(url), "%s", cfg->llm_base_url);   // already a full endpoint
+    build_endpoint(cfg->llm_base_url, url, sizeof(url));
+
+    if (strcmp(argv[1], "ask") == 0) {
+        if (argc < 3) {
+            printf("usage: llm ask <text>\n");
+            return 1;
+        }
+
+        // Join the remaining arguments so a prompt can contain spaces without
+        // needing quotes from the caller.
+        char prompt[200];
+        size_t used = 0u;
+        prompt[0] = '\0';
+        for (int i = 2; i < argc; i++) {
+            const size_t n = strlen(argv[i]);
+            if (used + n + 2u >= sizeof(prompt)) {
+                break;
+            }
+            if (used > 0u) {
+                prompt[used++] = ' ';
+            }
+            memcpy(prompt + used, argv[i], n);
+            used += n;
+            prompt[used] = '\0';
+        }
+        if (prompt[0] == '\0') {
+            printf("llm ask: empty prompt\n");
+            return 1;
+        }
+
+        char escaped[320];
+        json_escape(prompt, escaped, sizeof(escaped));
+
+        char body[640];
+        snprintf(body, sizeof(body),
+                 "{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}],"
+                 "\"max_tokens\":256,\"stream\":false}",
+                 cfg->llm_model, escaped);
+
+        // Heap, not stack: this task's stack already has to hold a TLS handshake,
+        // and the response buffer is the largest thing here.
+        char *resp = malloc(2048);
+        char *answer = malloc(1024);
+        if (resp == NULL || answer == NULL) {
+            free(resp);
+            free(answer);
+            printf("llm ask: out of memory for the response buffers\n");
+            return 1;
+        }
+
+        passport_http_result_t res;
+        const passport_http_request_t req = {
+            .url = url,
+            .api_key = cfg->llm_api_key,
+            .body = body,
+            .timeout_ms = 30000u,
+        };
+
+        printf("llm ask: POST %s (model %s, key %s, prompt %u B)\n", url, cfg->llm_model,
+               (cfg->llm_api_key[0] != '\0') ? "set" : "not set", (unsigned)strlen(prompt));
+        const esp_err_t err = passport_http_request(&req, &res, resp, 2048);
+
+        int rc = 1;
+        if (err != ESP_OK) {
+            printf("llm ask: transport failed: %s\n", esp_err_to_name(err));
+        } else if (res.status != 200) {
+            printf("llm ask: HTTP %d\n  body: %.200s\n", res.status, resp);
+        } else {
+            size_t decoded = 0u;
+            const passport_json_status_t js =
+                passport_json_string(resp, strlen(resp), "content", answer, 1024, &decoded);
+            printf("  %lld ms, %d B response, largest free block with the session live: %u KiB\n",
+                   (long long)res.elapsed_ms, res.body_len,
+                   (unsigned)(res.largest_during / 1024u));
+            if (js == PASSPORT_JSON_OK) {
+                printf("  reply: %s\n", answer);
+                rc = 0;
+            } else if (js == PASSPORT_JSON_TRUNCATED) {
+                printf("  reply (truncated from %u B): %s\n", (unsigned)decoded, answer);
+                rc = 0;
+            } else {
+                printf("  could not read the reply (status %d); raw body: %.200s\n",
+                       (int)js, resp);
+            }
+        }
+        free(resp);
+        free(answer);
+        return rc;
     }
 
     char body[256];
@@ -834,7 +950,7 @@ esp_err_t passport_cli_start(void)
     register_command("app", "Print uptime, battery, keypad voltage, and memory", &cmd_app);
     register_command("mem", "Print heap, largest free block, and the LVGL pool", &cmd_mem);
     register_command("net", "HTTPS transport: net probe <url>", &cmd_net);
-    register_command("llm", "Language model: llm probe", &cmd_llm);
+    register_command("llm", "Language model: llm probe | llm ask <text>", &cmd_llm);
     register_command("wifi", "Wi-Fi station: status | scan | connect [ms] | disconnect", &cmd_wifi);
     register_command("config", "Configuration: list | get | set | save | reset", &cmd_config);
     register_command("audio", "Audio path: status | tone [ms] | loopback [ms] | mute-check", &cmd_audio);

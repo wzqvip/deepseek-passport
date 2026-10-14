@@ -8,6 +8,7 @@ idf_component_register(
          "passport_config.c"
          "passport_config_store.c"
          "passport_http.c"
+         "passport_json.c"
          "passport_wifi.c"
          "passport_metrics_math.c"
          "assets/passport_pet_assets.c"
