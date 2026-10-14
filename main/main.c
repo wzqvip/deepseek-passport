@@ -16,6 +16,7 @@
 #include "key_guard.h"
 #include "nvs_flash.h"
 #include "passport_app.h"
+#include "passport_chat.h"
 #include "passport_cli.h"
 #include "passport_config_store.h"
 #include "passport_pet_assets.h"
@@ -170,6 +171,12 @@ void app_main(void) {
     passport_cli_set_key_sink(passport_cli_inject);
     if (passport_cli_start() != ESP_OK) {
         ESP_LOGW(TAG, "串口控制台不可用;设备其余功能不受影响");
+    }
+
+    // Conversation worker. It owns the stack a TLS handshake needs, so the button and
+    // console tasks never have to host network work.
+    if (passport_chat_start() != ESP_OK) {
+        ESP_LOGE(TAG, "对话线程启动失败;按 OK 将无法提问");
     }
 
     ESP_LOGI(TAG, "就绪:Display=1 Button=%d Audio=%d Battery=%d App=%d Cfg=%d",

@@ -53,9 +53,15 @@ Requires `CONFIG_LV_USE_OBJ_NAME=y` (set in `sdkconfig.defaults`).
 
 ## Two contracts worth knowing before scripting against it
 
-**Only objects with a user-set name are addressable.** Unnamed objects still appear
-in `ui tree` and `ui names`, but with a synthetic `kind_index` label that no
-command accepts. Name the widget you want to address.
+**Any path the listings print is addressable.** A path segment matches either the name
+the interface set or the synthetic `kind_index` label the listings synthesize for an
+unnamed object, so `ui get` and `ui tap` accept exactly what `ui tree` and `ui names`
+print. A named object is still the friendlier thing to work with, and naming a container
+makes its children readable (`chat/bubble` rather than `obj_3/bubble`).
+
+This was not always true, and the difference mattered: the listings printed
+`obj_3/bubble` for the model's answer while the resolver refused it, so the one string
+that proved a reply had arrived could not be read back over the console.
 
 **`ui key` is the reliable way to drive navigation; `ui tap` only works where the
 application registers click handlers.** Button injection enters the application's

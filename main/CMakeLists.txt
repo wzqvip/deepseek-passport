@@ -4,6 +4,7 @@ idf_component_register(
          "passport_audio.c"
          "passport_audio_arbiter.c"
          "passport_pet.c"
+         "passport_chat.c"
          "passport_cli.c"
          "passport_config.c"
          "passport_config_store.c"

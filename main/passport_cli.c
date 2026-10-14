@@ -135,9 +135,13 @@ static void walk_tree(lv_obj_t *obj, int index, int depth, int max_depth)
     }
 }
 
-// Resolve a slash-separated path of user-set names against the active screen.
-// Only named objects are addressable, which is exactly the set that carries
-// meaning on the display; unnamed ones still appear in the tree for inspection.
+// Resolve a slash-separated path against the active screen.
+//
+// A segment matches either the name the interface set or the synthesized handle the
+// listings print, so every path printed by "ui names" and "ui tree" is also addressable
+// by "ui get" and "ui tap". Before this, the listings happily printed "obj_3/bubble"
+// while the resolver refused it, which made the answer text in the conversation panel
+// unreadable over the console — the one string that proves the model replied.
 static lv_obj_t *find_by_path(lv_obj_t *parent, const char *path)
 {
     const char *slash = strchr(path, '/');
@@ -152,8 +156,9 @@ static lv_obj_t *find_by_path(lv_obj_t *parent, const char *path)
     const uint32_t count = lv_obj_get_child_count(parent);
     for (uint32_t i = 0u; i < count; i++) {
         lv_obj_t *child = lv_obj_get_child(parent, (int32_t)i);
-        const char *name = lv_obj_get_name(child);
-        if (name == NULL || strcmp(name, segment) != 0) {
+        char candidate[CLI_NAME_MAX];
+        safe_name(child, (int)i, candidate, sizeof(candidate));
+        if (strcmp(candidate, segment) != 0) {
             continue;
         }
         return (slash == NULL) ? child : find_by_path(child, slash + 1);
@@ -164,8 +169,16 @@ static lv_obj_t *find_by_path(lv_obj_t *parent, const char *path)
 static lv_obj_t *resolve(const char *term)
 {
     lv_obj_t *screen = lv_screen_active();
-    if (screen == NULL) {
+    if (screen == NULL || term == NULL) {
         return NULL;
+    }
+    // Accept the screen's own name as a leading segment, because that is how the
+    // listings present every path.
+    char screen_name[CLI_NAME_MAX];
+    safe_name(screen, 0, screen_name, sizeof(screen_name));
+    const size_t screen_len = strlen(screen_name);
+    if (strncmp(term, screen_name, screen_len) == 0 && term[screen_len] == '/') {
+        term += screen_len + 1u;
     }
     return find_by_path(screen, term);
 }

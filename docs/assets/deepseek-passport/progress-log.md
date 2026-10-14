@@ -19,6 +19,56 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 11: the button asks, the screen answers
+
+**Milestone:** pressing OK now holds a conversation with the model, and the answer is
+readable from the serial console.
+
+### What was built
+
+`passport_chat` is a worker task with a 12288-byte stack — the size a TLS handshake
+needs, established the hard way when the console task panicked at 4096. It allocates its
+response buffers once for the lifetime of the device rather than per turn, because
+per-turn allocation is what fragments a heap this small. Pressing OK queues a prompt and
+returns immediately; the worker takes the LVGL lock, shows the thinking expression,
+performs the request, decodes the answer, and shows it with the speaking expression.
+Failures the worker can see before touching the network — no model configured, no
+association — are reported on screen instead of hiding behind a fifteen-second DNS
+timeout.
+
+### Verified on the device
+
+```text
+ui names             chat/bubble   label   "Hi. Press OK."
+ui get chat/bubble   text: Hi. Press OK.
+ui key ok click
+ui get chat/bubble   text: Hello there!     <- the model's answer, on the screen
+ui get mood          speaking
+```
+
+One button press produced a TLS request to the model, decoded the reply, and put it on
+the display, where the console reads back exactly what a person sees.
+
+### A contract bug in my own console, found by needing it
+
+`ui names` printed `obj_3/bubble` for the answer, and `ui get obj_3/bubble` refused the
+same string. The listings synthesized handles for unnamed objects while the resolver
+matched only user-set names, so the console printed paths it could not read — and the one
+string needed to prove the model had replied was exactly such a path. The resolver now
+accepts either form, and the conversation panel was named `chat`, so the path reads
+`chat/bubble`. The documented contract was updated with the reason, not just the rule.
+
+### Prerequisite this milestone exposes
+
+The display font still has no CJK glyphs, so a Chinese answer would render as blank boxes,
+and the button therefore asks in English for now. This is recorded as a prerequisite for
+the Chinese-first product rather than as a detail: UTF-8 in the reply and a successful
+build do not prove the glyphs exist, which the repository's font checklist states
+outright. Until the pixel CJK font lands, the conversation screen is honest only in
+English — a real gap in the product, not in the plumbing.
+
+---
+
 ## 2026-10-14 — Session 10: the decoder, and a real Chinese reply
 
 **Milestone:** the response path is complete — the model's answer is extracted and

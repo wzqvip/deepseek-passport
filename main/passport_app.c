@@ -24,6 +24,7 @@
 #include "freertos/task.h"
 #include "lvgl.h"
 #include "passport_audio.h"
+#include "passport_chat.h"
 #include "passport_pet.h"
 
 static const char *TAG = "passport_app";
@@ -37,6 +38,15 @@ static const char *TAG = "passport_app";
 
 #define BATTERY_POLL_MS 5000
 #define REACT_MS        1400
+// The bubble shows roughly three wrapped lines at this font and width. Longer answers
+// are cut for display; the conversation screen that scrolls is a later milestone.
+#define BUBBLE_MAX      150
+
+// What pressing OK asks. It stays a constant until the configuration grows a prompt
+// field, which the web console milestone will want. Kept in English because the
+// display font still has no CJK glyphs: a Chinese answer would render as blank boxes
+// until the pixel font work lands, which this milestone records as a prerequisite.
+#define DEFAULT_PROMPT  "Say hello in one short sentence."
 
 static lv_obj_t *s_screen;
 static lv_obj_t *s_battery;
@@ -124,8 +134,10 @@ static void build_home(void)
     lv_label_set_text(s_battery, "--");
     plain(s_screen, 0, 26, 240, 2, APP_ACCENT);
 
-    // Conversation area: a panel with an accent edge, not a demo card.
+    // Conversation area: a panel with an accent edge, not a demo card. Named so the
+    // answer inside it is addressable from the console as "chat/bubble".
     lv_obj_t *panel = plain(s_screen, 12, 34, 216, 90, APP_PANEL);
+    lv_obj_set_name(panel, "chat");
     lv_obj_set_style_radius(panel, 6, 0);
     plain(panel, 0, 8, 3, 74, APP_ACCENT);
     s_bubble = label(panel, 12, 10, &lv_font_montserrat_14, APP_PAPER, "bubble");
@@ -142,7 +154,7 @@ static void build_home(void)
     plain(s_screen, 0, 232, 240, 3, APP_ACCENT);
 
     s_hint = label(s_screen, 10, 244, &lv_font_montserrat_14, APP_MUTED, "hint");
-    lv_label_set_text(s_hint, "OK: react    hold OK: standby");
+    lv_label_set_text(s_hint, "OK: ask    hold OK: standby");
 
     set_mood(PASSPORT_PET_IDLE, 0);
     lv_screen_load(s_screen);
@@ -235,8 +247,14 @@ void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
 
     switch (btn) {
     case BSP_BTN_OK:
-        set_mood(PASSPORT_PET_HAPPY, REACT_MS);
-        break;
+        // Start a conversational turn. The network work belongs to the chat worker, so
+        // this task only queues it — and it releases the lock first, because the worker
+        // takes the same lock to show the thinking expression.
+        bsp_lvgl_unlock();
+        if (passport_chat_ask(DEFAULT_PROMPT) != ESP_OK) {
+            passport_app_show_error("One moment, still thinking.");
+        }
+        return;
     case BSP_BTN_UP:
     case BSP_BTN_DOWN: {
         // Step through the expressions. This is how a host verifies the whole
@@ -255,6 +273,45 @@ void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
     default:
         break;
     }
+    bsp_lvgl_unlock();
+}
+
+void passport_app_begin_turn(const char *prompt)
+{
+    if (!bsp_lvgl_lock(500)) {
+        return;
+    }
+    set_mood(PASSPORT_PET_THINKING, 0);
+    if (prompt != NULL && prompt[0] != '\0') {
+        set_bubble(prompt);
+    }
+    bsp_lvgl_unlock();
+}
+
+void passport_app_show_reply(const char *text)
+{
+    if (text == NULL) {
+        return;
+    }
+    if (!bsp_lvgl_lock(500)) {
+        return;
+    }
+    // Order matters: set_mood() writes the mood's stock line into the bubble, so the
+    // answer has to go in after it or it would be overwritten by "Here is what I found."
+    set_mood(PASSPORT_PET_SPEAKING, 2500u);
+    char shown[BUBBLE_MAX];
+    snprintf(shown, sizeof(shown), "%s", text);
+    set_bubble(shown);
+    bsp_lvgl_unlock();
+}
+
+void passport_app_show_error(const char *reason)
+{
+    if (!bsp_lvgl_lock(500)) {
+        return;
+    }
+    set_mood(PASSPORT_PET_DISTRESSED, 4000u);
+    set_bubble((reason != NULL) ? reason : "Something went wrong.");
     bsp_lvgl_unlock();
 }
 
