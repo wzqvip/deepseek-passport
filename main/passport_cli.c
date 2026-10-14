@@ -976,9 +976,11 @@ static int cmd_voice(int argc, char **argv)
     }
 
     if (strcmp(argv[1], "gate") == 0) {
+        char report[256];
+        passport_speech_report(report, sizeof(report));
         if (argc < 3) {
-            printf("voice gate: %d (peak below this counts as an empty room; 0 disables)\n",
-                   passport_speech_silence_peak());
+            printf("voice gate: %s\n", report);
+            printf("  (a number pins the threshold; 0 never treats anything as silence)\n");
             return 0;
         }
         const int value = atoi(argv[2]);

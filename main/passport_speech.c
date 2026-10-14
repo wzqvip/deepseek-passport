@@ -6,6 +6,7 @@
 
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "passport_app.h"
@@ -39,14 +40,47 @@ static volatile bool s_running;
 static volatile bool s_held;        // the button is down right now
 static volatile bool s_started;     // a turn has been asked for and not yet run
 static volatile bool s_release_early;   // the button came up before the worker got to it
+static volatile int64_t s_press_us;     // when the button went down, for the latency measurement
+static volatile int64_t s_woke_us;      // when the worker started the turn
+static volatile int64_t s_ui_us;        // when the screen had been updated
 static passport_voice_t s_voice;
 static char s_last[128] = "no turn yet";
 static char s_last_transcript[PASSPORT_WORK_QUESTION_MAX];
 static size_t s_last_bytes;
 static unsigned s_last_chunks;
 static unsigned s_turns;
-// Below this peak a recording is treated as an empty room. Overridable from the console.
-static volatile int s_silence_peak = 400;
+// The peak below which a recording is treated as an empty room. -1 means "derive it from the room",
+// which is the default: a fixed number is a guess about a room nobody has measured. The console can
+// pin a value, including 0 for "never treat anything as silence".
+static volatile int s_silence_peak = -1;
+
+// Below this, the codec's own noise would trip the gate; above it, a quiet speaker would be dropped.
+#define GATE_MIN 300
+#define GATE_MAX 4000
+
+// The threshold to use right now, and the reason for it.
+static int effective_gate(void)
+{
+    if (s_silence_peak >= 0) {
+        return s_silence_peak;
+    }
+    passport_audio_level_t floor;
+    if (!passport_audio_noise_floor(&floor)) {
+        // No measurement: fall back to the fixed number this used to be, and say so where the console
+        // can see it rather than pretending the value is informed.
+        return 400;
+    }
+    // Twice the room's own peak. This is a heuristic and is described as one: the room was measured
+    // by the boot warm-up, but the level of a person speaking into this microphone is something only
+    // a person can check, so the margin is deliberately generous rather than tuned.
+    int gate = (int)(floor.peak * 2u);
+    if (gate < GATE_MIN) {
+        gate = GATE_MIN;
+    } else if (gate > GATE_MAX) {
+        gate = GATE_MAX;
+    }
+    return gate;
+}
 
 static void wake(void)
 {
@@ -63,6 +97,7 @@ void passport_speech_talk_down(void)
         ESP_LOGI(TAG, "回答中,忽略这次按下(半双工:要打断应先取消)");
         return;
     }
+    s_press_us = esp_timer_get_time();
     s_held = true;
     s_started = true;
     s_release_early = false;
@@ -100,10 +135,14 @@ void passport_speech_report(char *out, size_t out_size)
     if (out == NULL || out_size == 0u) {
         return;
     }
+    passport_audio_level_t floor;
+    const bool measured = passport_audio_noise_floor(&floor);
     snprintf(out, out_size,
-             "state=%s mic=%s turns=%u silence_gate=%d last=\"%s\" transcript=\"%s\"",
+             "state=%s mic=%s turns=%u gate=%d%s last=\"%s\" transcript=\"%s\"",
              passport_voice_state_name(s_voice.state), s_voice.mic_open ? "open" : "closed",
-             s_turns, s_silence_peak, s_last, s_last_transcript);
+             s_turns, effective_gate(),
+             (s_silence_peak >= 0) ? "" : (measured ? " (twice the measured room)" : " (fallback)"),
+             s_last, s_last_transcript);
 }
 
 // One chunk of a chunked body, framed by hand.
@@ -192,6 +231,15 @@ static int stream_turn(void)
     size_t longest_silence = 0;
 
     ESP_LOGI(TAG, "录音开始: held=%d", (int)s_held);
+    // Where the time between the press and the first sample goes. Measured rather than guessed: this
+    // instrumentation was added to chase a reported 1.4-second delay that turned out not to exist —
+    // press to first sample measures 26 ms — and it is kept because the number is worth having when
+    // something later does slow down.
+    const int64_t now = esp_timer_get_time();
+    ESP_LOGI(TAG, "延迟: 按下->唤醒 %lld ms, 唤醒->界面 %lld ms, 界面->连接就绪 %lld ms",
+             (long long)((s_woke_us - s_press_us) / 1000),
+             (long long)((s_ui_us - s_woke_us) / 1000),
+             (long long)((now - s_ui_us) / 1000));
     while (s_held && chunks < MAX_CHUNKS) {
         passport_audio_level_t part = { 0, 0, 0 };
         const esp_err_t read = passport_audio_capture(chunk, CHUNK_SAMPLES, &part);
@@ -244,13 +292,10 @@ static int stream_turn(void)
     // Too quiet to be speech: the provider would answer with an empty transcript or a guess. The
     // audio has already been streamed — that is the price of not buffering it — but its transcript
     // is discarded rather than asked for, which still saves the provider call and its cost.
-    //
-    // The threshold is adjustable from the console because the right value depends on the room:
-    // measured ambient peaks on this desk were around 237, while speech is in the thousands, so the
-    // default sits between them. Zero disables the gate.
-    if (s_silence_peak > 0u && level.peak < (unsigned)s_silence_peak) {
+    const int gate = effective_gate();
+    if (gate > 0 && level.peak < (unsigned)gate) {
         snprintf(s_last, sizeof(s_last), "%u KB, peak %u below gate %d: discarded",
-                 (unsigned)(bytes / 1024u), level.peak, s_silence_peak);
+                 (unsigned)(bytes / 1024u), level.peak, gate);
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         return -2;
@@ -514,6 +559,7 @@ static void run_turn(void)
 {
     s_started = false;
     s_turns++;
+    s_woke_us = esp_timer_get_time();
 
     passport_voice_action_t action = passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_TALK_PRESS);
     if (action != PASSPORT_VOICE_ACT_OPEN_MIC) {
@@ -522,6 +568,7 @@ static void run_turn(void)
         return;
     }
     passport_app_show_status("听你说…", PASSPORT_PET_LISTENING);
+    s_ui_us = esp_timer_get_time();
 
     const int result = stream_turn();
 

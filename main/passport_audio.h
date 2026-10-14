@@ -49,6 +49,13 @@ esp_err_t passport_audio_capture(int16_t *buffer, size_t samples, passport_audio
 // Play `samples` mono samples. The microphone stays closed for the whole call.
 esp_err_t passport_audio_play(const int16_t *buffer, size_t samples);
 
+// The level measured during the warm-up window at start-up: what this room sounds like with nobody
+// speaking. Exposed because a fixed silence threshold is a guess, and this turns it into a
+// measurement — a caller can set its threshold relative to the room it is actually in.
+//
+// Returns false when no warm-up has run yet.
+bool passport_audio_noise_floor(passport_audio_level_t *out);
+
 // Play an utterance that arrives in pieces — a reply synthesized by a service, for instance.
 //
 // The audio path is taken once by `_begin` and released once by `_end`, so a long answer does not

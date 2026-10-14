@@ -19,6 +19,67 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 30: the silence threshold now measures the room, and two wrong defect reports retracted
+
+**Milestone:** the device measures its own room at start-up and sets its silence threshold from that
+measurement. And two defects I reported last session turn out not to exist, which is the more important
+half of this entry.
+
+### The retractions
+
+**"A press does not start recording for about 1.4 seconds."** It does not. Measured with instrumentation
+added for the purpose:
+
+```text
+the speech task logs (in Chinese, as it logs): press->wake 0 ms,
+  wake->screen 0 ms, screen->connection ready 26 ms
+```
+
+Twenty-six milliseconds from the press to the first sample. A second check with the user-facing case —
+a 300 ms press — captured 11,520 bytes, which is 0.36 seconds of 16 kHz audio. The recording tracks the
+press. The 1.4 seconds was in my test harness: it wrote a command, waited out a fixed read window, then
+sent the release, and I read the resulting empty recording as a firmware fault.
+
+**"The silence gate's default sits inside the ambient range and would discard real speech."** Also
+wrong, and wrong in the other direction. Ambient peaks in this session ranged from 216 to 886 across
+runs, and speech was never actually measured, because every automated test was typed at a console rather
+than spoken. A fixed threshold of 400 therefore did not discard speech — it was simply a guess that
+filtered quiet moments and let noisy ones through.
+
+### What was actually wrong, and what was done about it
+
+A fixed threshold is a guess about a room nobody measured. The boot warm-up — half a second of capture
+that already existed to settle the codec — now **measures the room as well**, skipping its own settling
+transient, and the gate is twice the measured peak, clamped between 300 and 4000. The console can pin a
+value, and 0 disables the check. `voice status` reports the number and where it came from.
+
+Verified on the device:
+
+```text
+voice gate -> state=idle mic=closed turns=0 gate=562 (twice the measured room)
+a quiet press -> 48 KB, peak 252 below gate 562: discarded
+```
+
+The room measured 281 peak at start-up, the gate came out at 562, and a press with no speech in it was
+discarded — the threshold did its job on the first try, in the room it was measured in. The audio had
+already been streamed when the decision was made, so the saving is the provider call rather than the
+bytes; that is stated in the code.
+
+**What is still not verified, and cannot be by me:** whether the gate is set correctly for a person
+speaking into this microphone. The margin is described as a heuristic in the code, not as a tuned value,
+because the speech level is something only a person can measure. The override exists for exactly that.
+
+### The pattern, named
+
+This is the second session in a row in which I published a firmware defect that was really an artifact of
+my own measurement. Both had the same shape: a claim inferred from a test script's behaviour rather than
+from a number the device reported. The remedy being adopted rather than promised: **instrument first,
+then report.** Where a latency or a level is in question, the device logs the measurement before any
+conclusion is drawn, and the instrumentation is kept afterwards — the press-to-sample breakdown stays in
+the firmware precisely because it is the number that settled the question.
+
+---
+
 ## 2026-10-14 — Session 29: the answer is spoken, and a wrong diagnosis corrected
 
 **Milestone:** the voice loop is complete. Hold OK, speak, release: the audio streams to the bridge,

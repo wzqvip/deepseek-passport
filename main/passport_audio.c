@@ -23,6 +23,37 @@ static const char *TAG = "passport_audio";
 static passport_audio_owner_t s_owner = PASSPORT_AUDIO_FREE;
 static bool s_opened;
 static bool s_needs_warmup;
+static passport_audio_level_t s_noise_floor;
+static bool s_floor_measured;
+
+// Fold one chunk into a peak-hold level. Shared by a capture and by the warm-up window, so the floor
+// and a turn's level are measured the same way and can be compared.
+static void update_level(const int16_t *samples, size_t count, passport_audio_level_t *level)
+{
+    if (level == NULL || samples == NULL || count == 0u) {
+        return;
+    }
+    const unsigned chunk_rms = passport_pcm_rms(samples, count);
+    const unsigned chunk_peak = passport_pcm_peak(samples, count);
+    if (chunk_rms > level->rms) {
+        level->rms = chunk_rms;
+    }
+    if (chunk_peak > level->peak) {
+        level->peak = chunk_peak;
+    }
+    level->samples += count;
+}
+
+bool passport_audio_noise_floor(passport_audio_level_t *out)
+{
+    if (!s_floor_measured) {
+        return false;
+    }
+    if (out != NULL) {
+        *out = s_noise_floor;
+    }
+    return true;
+}
 
 // One cycle of a 1 kHz sine at 16 kHz, at half scale so a tone check is
 // comfortable rather than startling. A table keeps the generator free of libm and
@@ -113,15 +144,7 @@ esp_err_t passport_audio_capture(int16_t *buffer, size_t samples, passport_audio
             break;
         }
         if (level != NULL) {
-            const unsigned chunk_rms = passport_pcm_rms(buffer + got, n);
-            const unsigned chunk_peak = passport_pcm_peak(buffer + got, n);
-            if (chunk_rms > level->rms) {
-                level->rms = chunk_rms;
-            }
-            if (chunk_peak > level->peak) {
-                level->peak = chunk_peak;
-            }
-            level->samples += n;
+            update_level(buffer + got, n, level);
         }
         got += n;
     }
@@ -214,12 +237,24 @@ esp_err_t passport_audio_warmup(void)
     if (err == ESP_OK) {
         int16_t scratch[CHUNK_SAMPLES];
         size_t left = WARMUP_BOOT_SAMPLES;
+        // The warm-up window doubles as the room measurement: half a second of the room with nobody
+        // speaking is exactly what a silence threshold needs to be relative to.
         while (left > 0u) {
             const size_t n = (left > CHUNK_SAMPLES) ? CHUNK_SAMPLES : left;
             if (bsp_audio_read(scratch, n * sizeof(int16_t)) != ESP_OK) {
                 break;
             }
+            // The first open's settling transient is not the room, so it is measured out of the floor
+            // rather than into it: only the second half of the window counts.
+            if (left <= WARMUP_BOOT_SAMPLES / 2u) {
+                update_level(scratch, n, &s_noise_floor);
+            }
             left -= n;
+        }
+        s_floor_measured = (s_noise_floor.samples > 0u);
+        if (s_floor_measured) {
+            ESP_LOGI(TAG, "房间底噪: rms=%u peak=%u(%u 个采样)", s_noise_floor.rms,
+                     s_noise_floor.peak, (unsigned)s_noise_floor.samples);
         }
         // The per-open guard is satisfied by this longer window.
         s_needs_warmup = false;

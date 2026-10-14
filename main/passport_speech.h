@@ -37,8 +37,10 @@ esp_err_t passport_speech_speak(const char *text);
 // Describe the voice path for the console.
 void passport_speech_report(char *out, size_t out_size);
 
-// The peak below which a recording counts as an empty room. The right value depends on the room:
-// measured ambient peaks on a desk were around 237 while speech is in the thousands. Zero disables
-// the check, which is how a silent test bench can still exercise the upload path.
+// The peak below which a recording counts as an empty room. The default is **-1, meaning "derive it
+// from the room"**: the boot warm-up measures the room and the gate becomes twice that peak, clamped
+// between 300 and 4000. A fixed number was a guess about a room nobody had measured, and the guesses
+// in this session ranged from 216 to 886 depending on the hour. A value of 0 or more pins the
+// threshold, and 0 disables the check — which is how a silent test bench exercises the upload path.
 void passport_speech_set_silence_peak(int peak);
 int passport_speech_silence_peak(void);
