@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "bsp_battery.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
@@ -24,7 +25,7 @@ static const char *TAG = "passport_prov";
 
 #define PROV_CHANNEL      6
 #define PROV_MAX_CLIENTS  2
-#define PAGE_MAX          2048
+#define PAGE_MAX          4096
 #define BODY_MAX          1024
 #define AP_IP             "192.168.4.1"
 
@@ -77,55 +78,81 @@ const char *passport_provision_address(void)
 static int render_root(char *out, size_t out_size)
 {
     const passport_config_t *cfg = passport_config_current();
-
-    char ssid[128];
-    char model[128];
-    char pet[128];
-    char base[192];
-    passport_portal_escape(cfg->wifi_ssid, ssid, sizeof(ssid));
-    passport_portal_escape(cfg->llm_model, model, sizeof(model));
-    passport_portal_escape(cfg->pet_name, pet, sizeof(pet));
-    passport_portal_escape(cfg->llm_base_url, base, sizeof(base));
-
-    // Secrets never appear as values: the field says whether one is stored and submits
-    // nothing unless the owner types a replacement.
-    const char *key_state = (cfg->llm_api_key[0] != '\0') ? "已设置,留空则不改动" : "未设置";
-    const char *pass_state = (cfg->wifi_password[0] != '\0') ? "已设置,留空则不改动" : "未设置";
-
     const char *connected = (passport_wifi_state() == PASSPORT_WIFI_CONNECTED) ? "已连接" : "未连接";
+    const int soc = bsp_battery_soc();
+    char battery[24];
+    if (soc >= 0) {
+        snprintf(battery, sizeof(battery), "电量 %d%%", soc);
+    } else {
+        snprintf(battery, sizeof(battery), "电量未知");
+    }
 
-    return snprintf(out, out_size,
+    int used = snprintf(out, out_size,
         "<!doctype html><html lang=zh><head><meta charset=utf-8>"
         "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
         "<title>DeepSeek Passport</title><style>"
         "body{font-family:system-ui,sans-serif;margin:0;padding:18px;background:#101828;color:#EAF0FF}"
-        "h1{font-size:20px;margin:0 0 4px}p.sub{color:#8FA3C8;margin:0 0 18px;font-size:13px}"
+        "h1{font-size:20px;margin:0 0 4px}h2{font-size:14px;margin:22px 0 0;color:#4D6BFE}"
+        "p.sub{color:#8FA3C8;margin:0 0 18px;font-size:13px}"
         "label{display:block;margin:14px 0 4px;font-size:13px;color:#8FA3C8}"
+        ".hint{color:#4D6BFE}"
         "input{width:100%%;box-sizing:border-box;padding:10px;font-size:15px;border-radius:8px;"
         "border:1px solid #2A3A5C;background:#18233A;color:#EAF0FF}"
         "button{margin-top:22px;width:100%%;padding:13px;font-size:16px;border:0;border-radius:8px;"
         "background:#4D6BFE;color:#fff;font-weight:600}"
         ".state{background:#18233A;border-left:3px solid #4D6BFE;padding:9px 12px;border-radius:6px;"
-        "font-size:13px;color:#8FA3C8}</style></head><body>"
-        "<h1>DeepSeek Passport</h1><p class=sub>设备设置 · 保存后重启生效</p>"
-        "<div class=state>Wi-Fi %s · 热点 %s · 地址 %s · 可用内存 %u KB</div>"
-        "<form method=post action=/save>"
-        "<label>Wi-Fi 名称</label><input name=wifi_ssid value=\"%s\" autocapitalize=off>"
-        "<label>Wi-Fi 密码 <span style=\"color:#4D6BFE\">(%s)</span></label>"
-        "<input name=wifi_password type=password autocapitalize=off>"
-        "<label>DeepSeek API Key <span style=\"color:#4D6BFE\">(%s)</span></label>"
-        "<input name=llm_api_key type=password autocapitalize=off>"
-        "<label>接口地址</label><input name=llm_base_url value=\"%s\" autocapitalize=off>"
-        "<label>模型</label><input name=llm_model value=\"%s\" autocapitalize=off>"
-        "<label>宠物名字</label><input name=pet_name value=\"%s\">"
-        "<label>音量 (0-100)</label><input name=volume value=\"%u\" inputmode=numeric>"
-        "<label>提示方式 (0 静音 / 1 提示音 / 2 朗读)</label>"
-        "<input name=notify_mode value=\"%u\" inputmode=numeric>"
-        "<button type=submit>保存并重启</button></form>"
-        "<p class=sub style=\"margin-top:18px\">版本 %s</p></body></html>",
-        connected, s_ssid, s_address, (unsigned)(esp_get_free_heap_size() / 1024u),
-        ssid, pass_state, key_state, base, model, pet,
-        (unsigned)cfg->volume, (unsigned)cfg->notify_mode, "passport");
+        "font-size:13px;color:#8FA3C8;line-height:1.6}</style></head><body>"
+        "<h1>DeepSeek Passport</h1><p class=sub>设备设置 · 保存后立即生效</p>"
+        "<div class=state>Wi-Fi %s · 热点 %s · 地址 %s<br>%s · 可用内存 %u KB</div>"
+        "<form method=post action=/save>",
+        connected, s_ssid, s_address, battery, (unsigned)(esp_get_free_heap_size() / 1024u));
+
+    // The form is generated from the same table that parses the submission, so a field cannot be
+    // writable from the console but invisible here. Group headings come from the table too.
+    const char *group = NULL;
+    for (int i = 0; i < passport_portal_field_count(); i++) {
+        const passport_portal_field_t *field = passport_portal_field(i);
+        const passport_cfg_field_t *target = passport_cfg_find(field->config_field);
+        if (target == NULL) {
+            continue;
+        }
+        if (group == NULL || strcmp(group, field->group) != 0) {
+            group = field->group;
+            used += snprintf(out + used, out_size - (size_t)used, "<h2>%s</h2>", group);
+        }
+
+        char value[128];
+        char escaped[192];
+        passport_cfg_format(cfg, target, value, sizeof(value));
+        passport_portal_escape(value, escaped, sizeof(escaped));
+
+        if (target->secret) {
+            // A stored secret is never a value in the page. What the person sees is whether one
+            // exists, and leaving it blank keeps it.
+            used += snprintf(out + used, out_size - (size_t)used,
+                             "<label>%s <span class=hint>(%s,留空则不改动)</span></label>"
+                             "<input name=%s type=password autocomplete=off>",
+                             field->label, escaped, field->form_key);
+        } else {
+            used += snprintf(out + used, out_size - (size_t)used,
+                             "<label>%s</label><input name=%s value=\"%s\" autocapitalize=off>",
+                             field->label, field->form_key, escaped);
+        }
+        if (used < 0 || (size_t)used >= out_size) {
+            ESP_LOGW(TAG, "设置页在 %s 处被截断", field->form_key);
+            break;
+        }
+    }
+
+    if (used > 0 && (size_t)used < out_size) {
+        used += snprintf(out + used, out_size - (size_t)used,
+                         "<button type=submit>保存</button></form>"
+                         "<p class=sub style=\"margin-top:18px\">"
+                         "<a style=\"color:#4D6BFE\" href=/api/status>状态</a> · "
+                         "<a style=\"color:#4D6BFE\" href=/api/config>全部配置</a></p>"
+                         "</body></html>");
+    }
+    return used;
 }
 
 static int render_status(char *out, size_t out_size)

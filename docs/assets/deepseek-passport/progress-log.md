@@ -19,6 +19,68 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 26: the web console covers every setting, and does not leak them
+
+**Milestone:** the device can be configured completely from a phone. Every setting the console can
+change, the setup page can change, and the page shows live status while it does it.
+
+### What was built
+
+The setup page is now **generated from the same table that parses the submission**. One table lists
+each form field, the configuration field it writes, its label, and its group; the page iterates it
+and the parser applies it. A setting added to the schema and forgotten here is now caught by the
+host test rather than by a user who cannot find it.
+
+Three checks live in that test, and they are the reason the table is worth having: every entry names
+a field the schema really has; no two entries write the same setting or share a form key; and **the
+table covers every settable field in the schema**, counted rather than assumed.
+
+Whether a field is secret is asked of the schema instead of being repeated in the table, so a key
+cannot become visible because someone forgot to mark it twice. Secrets render as an empty input
+labelled with whether one is stored; blank still means "keep".
+
+The page is grouped — network, chat model, voice, work mode, and preferences, each heading written
+in the interface's language — and shows live state: Wi-Fi, hotspot,
+address, battery, free heap, with links to `/api/status` and `/api/config`.
+
+### Verified on the device
+
+```text
+prov page        3,380 bytes, complete HTML, 19 inputs, 5 group headings
+                 the page contains neither the stored Wi-Fi password nor the API key
+                 (checked against the actual values, not eyeballed)
+prov form pet_name=Whale2&notify_mode=2&idle_off_seconds=30
+                 applied and saved; config get confirms all three
+                 the two secrets still read "(set)": a blank field did not clear them
+prov page status {"wifi":"connected","rssi":-41,...,"free_heap":21664,"largest_block":11264}
+```
+
+### Two mistakes of mine on the way
+
+- **The console's preview was cut short while the page was fine.** `prov page` printed into a
+  2,048-byte buffer while the HTTP path used 4,096, so the preview ended mid-tag and the page looked
+  broken. The console now uses the same size; the lesson is that a debugging path with a different
+  limit from the real one invents bugs.
+- **My check for a complete page was wrong, not the page.** I asked whether the captured text ends
+  with `</html>`; it ended with the console's `passport>` prompt, so the answer was no. The renderer
+  had reported 3,380 bytes and the footer was in the capture all along. Worth writing down because
+  the wrong check nearly sent me into the renderer.
+
+I also wrote, and then removed, a genuinely bad piece of code: a battery figure inserted by
+searching the rendered page for a placeholder and `memmove`-ing the rest of the string. Formatting
+the string before the `snprintf` is what it should have been from the start.
+
+### A measurement worth putting in the budget
+
+With the setup portal running and the code on screen, free heap is **21,664 bytes** and the largest
+block is **11,264**. Both the page buffer and the QR pixels are held at once, on top of the access
+point and the HTTP server. The consequence is concrete: **direct-mode TLS needs about 24 KB
+contiguous, so it cannot run while the portal is up.** Provisioning and provider calls must not
+overlap, which is already true of the design — a device being set up has nothing to say to a model
+yet — but it is now a measured constraint rather than an assumption.
+
+---
+
 ## 2026-10-14 — Session 25: standby, deep sleep, and the wake-level bug it found
 
 **Milestone:** the device turns its screen off when nobody is there, lights it again on a key

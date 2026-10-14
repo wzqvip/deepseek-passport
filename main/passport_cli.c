@@ -1218,7 +1218,9 @@ static int cmd_prov(int argc, char **argv)
                 route = passport_portal_route(argv[2]);
             }
         }
-    static char page[2048];
+    // The same size the HTTP path uses. A smaller buffer here cut the preview short and made the
+    // page look broken when it was only the console that was short of room.
+    static char page[4096];
         const int written = passport_provision_render(route, page, sizeof(page));
         if (written < 0) {
             printf("prov page: route \"%s\" resolves to %s, which has no rendered body\n",

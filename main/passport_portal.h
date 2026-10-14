@@ -40,9 +40,16 @@ size_t passport_portal_escape(const char *in, char *out, size_t out_size);
 // Declared here rather than built inside the HTTP handler so a host test can prove that
 // every accepted field really exists in the configuration schema — a typo would otherwise
 // be discovered by a user whose password silently did not save.
+//
+// This one table drives both directions: the setup page is generated from it, and a submission is
+// applied through it. A field added here appears in the form and becomes writable without a second
+// list that can drift out of step. Whether a field is secret is asked of the schema rather than
+// repeated here, so a key cannot become visible because someone forgot to mark it twice.
 typedef struct {
-    const char *form_key;
-    const char *config_field;
+    const char *form_key;      // the input's name attribute
+    const char *config_field;  // the configuration field it writes
+    const char *label;         // what the person reads
+    const char *group;         // a heading; a change starts a new section
 } passport_portal_field_t;
 
 int passport_portal_field_count(void);

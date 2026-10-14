@@ -162,15 +162,33 @@ bool passport_portal_form_get(const char *body, const char *key, char *out, size
 // from a phone that cannot show a stored secret, so treating blank as "clear" would let a
 // careless save destroy a working key. Clearing a value is an explicit act with an
 // explicit interface: "config set <field> \"\"" on the console.
+//
+// Every entry names a field the configuration schema really has; the host test checks that, because
+// a typo here is discovered by a user whose setting silently did not save.
 static const passport_portal_field_t FIELDS[] = {
-    { "wifi_ssid", "wifi_ssid" },
-    { "wifi_password", "wifi_password" },
-    { "llm_base_url", "llm_base_url" },
-    { "llm_api_key", "llm_api_key" },
-    { "llm_model", "llm_model" },
-    { "pet_name", "pet_name" },
-    { "volume", "volume" },
-    { "notify_mode", "notify_mode" },
+    { "wifi_ssid", "wifi_ssid", "Wi-Fi 名称", "网络" },
+    { "wifi_password", "wifi_password", "Wi-Fi 密码", "网络" },
+
+    { "llm_base_url", "llm_base_url", "接口地址", "对话模型" },
+    { "llm_api_key", "llm_api_key", "API Key", "对话模型" },
+    { "llm_model", "llm_model", "模型", "对话模型" },
+
+    { "stt_base_url", "stt_base_url", "转写接口地址", "语音" },
+    { "stt_api_key", "stt_api_key", "转写密钥", "语音" },
+    { "stt_model", "stt_model", "转写模型", "语音" },
+    { "tts_base_url", "tts_base_url", "朗读接口地址", "语音" },
+    { "tts_api_key", "tts_api_key", "朗读密钥", "语音" },
+    { "tts_model", "tts_model", "朗读模型", "语音" },
+    { "tts_voice", "tts_voice", "音色", "语音" },
+
+    { "bridge_url", "bridge_url", "桥接服务地址", "工作模式" },
+    { "bridge_token", "bridge_token", "桥接令牌", "工作模式" },
+
+    { "pet_name", "pet_name", "宠物名字", "偏好" },
+    { "volume", "volume", "音量 (0-100)", "偏好" },
+    { "brightness", "brightness", "亮度 (0-100,0 为熄屏)", "偏好" },
+    { "notify_mode", "notify_mode", "提示方式 (0 静音 / 1 提示音 / 2 朗读)", "偏好" },
+    { "idle_off_seconds", "idle_off_seconds", "静置熄屏秒数 (0 为不熄)", "偏好" },
 };
 
 int passport_portal_field_count(void)

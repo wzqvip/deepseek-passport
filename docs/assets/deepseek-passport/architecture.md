@@ -706,6 +706,13 @@ streams PCM in small chunks instead of staging a turn in RAM. The provider round
 itself measured 1,730 ms including the handshake, against the latency budget that
 assumed a first-audio target of 2.5 s for three sequential stages.
 
+**The provisioning portal and a TLS session cannot coexist.** With the portal running and
+the join code on screen — the page buffer and the code's pixels are both held — free heap
+measured 21,664 bytes and the largest block 11,264, which is less than half of what a
+handshake needs. That is not a defect to work around: a device being set up has nothing to
+say to a model yet. It does mean the two must never be started together, and that a future
+feature wanting both has to provision first and then release the portal.
+
 Standing rules that follow from that:
 
 - Log `lv_mem_monitor()`, `esp_get_free_heap_size()`, and the largest free block

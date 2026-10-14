@@ -159,6 +159,10 @@ int main(void)
         assert(f != NULL);
         assert(f->form_key != NULL && f->form_key[0] != '\0');
         assert(f->config_field != NULL);
+        // The page is generated from this table, so a missing label or heading would render as a
+        // nameless input or a crash in the formatter.
+        assert(f->label != NULL && f->label[0] != '\0');
+        assert(f->group != NULL && f->group[0] != '\0');
         const passport_cfg_field_t *cfg = passport_cfg_find(f->config_field);
         assert(cfg != NULL);   // the schema knows this field
         // The form key must survive its own parser: a key containing '&' or '=' could
@@ -166,6 +170,12 @@ int main(void)
         assert(strchr(f->form_key, '&') == NULL);
         assert(strchr(f->form_key, '=') == NULL);
         assert(strchr(f->form_key, '%') == NULL);
+        // Two fields writing the same setting would silently overwrite each other.
+        for (int j = i + 1; j < passport_portal_field_count(); j++) {
+            const passport_portal_field_t *other = passport_portal_field(j);
+            assert(strcmp(f->config_field, other->config_field) != 0);
+            assert(strcmp(f->form_key, other->form_key) != 0);
+        }
         if (strcmp(f->form_key, "wifi_ssid") == 0) {
             saw_wifi = true;
         }
@@ -176,6 +186,23 @@ int main(void)
     // The two fields a first-time setup cannot do without are actually accepted.
     assert(saw_wifi);
     assert(saw_key);
+
+    // Every settable configuration field should be reachable from the page, so a phone can do
+    // whatever the console can. Counting them catches a field added to the schema and forgotten here.
+    int writable = 0;
+    for (int i = 0; i < passport_cfg_field_count(); i++) {
+        const passport_cfg_field_t *cfg = passport_cfg_field(i);
+        if (strcmp(cfg->name, "version") == 0) {
+            continue;   // not a setting
+        }
+        writable++;
+        bool listed = false;
+        for (int j = 0; j < passport_portal_field_count() && !listed; j++) {
+            listed = strcmp(passport_portal_field(j)->config_field, cfg->name) == 0;
+        }
+        assert(listed);
+    }
+    assert(passport_portal_field_count() == writable);
 
     return 0;
 }
