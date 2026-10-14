@@ -19,6 +19,62 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 20: the boot loop I caused, its fix, and what is verified now
+
+**Status:** the device is working again. One of last session's two pending checks passes; the
+other does not, for a measured reason.
+
+### The boot loop, and that it was mine
+
+The owner reported the board restarting continuously with the buttons doing nothing. The
+console showed a repeating panic immediately after the audio warm-up line:
+
+```text
+Guru Meditation Error: Core 0 panic'ed (Stack protection fault).
+Stack bounds: 0x3fcaa28c - 0x3fcab280      <- about 4 KB
+```
+
+The stack bounds are the main task's. The previous session's change called `qr_reserve()` from
+`passport_app_start()`, which runs on the main task — and reserving the buffer encodes a symbol,
+which needs about six kilobytes. The device therefore panicked before the interface came up and
+restarted, forever, which is why no button did anything.
+
+Two lessons, both recorded where they will be read:
+
+- **A stack-size requirement belongs in the interface, not in the commit that discovers it.**
+  `passport_qr.h` now states the encoder's roughly six kilobytes of stack and warns that a small
+  caller panics in a way that looks like a reboot loop.
+- **A reboot loop is what a stack fault looks like from outside.** The earlier symptom — the
+  host reporting "a device attached to the system is not functioning" — was this loop resetting
+  the USB console, not a separate fault. I had read it as a hardware problem.
+
+### The fix
+
+The reservation moved to the application worker, which was sized from 4608 to **12288 bytes**
+for exactly this reason, and the call was removed from the main task.
+
+### Verified on the device
+
+```text
+boot          no panic; the device is running
+uptime        21,793 ms then 30,309 ms, so it is not restarting
+```
+
+And the first of the two checks from last session now passes: with the access point **down**,
+`prov status` already reports `ssid Passport-91E1`, and `prov qr` reports a **40-byte payload**.
+That is the on-demand identity fix working — last session the same command reported 18 bytes,
+which was the trap that prompted it.
+
+### Still not verified, with the measurement
+
+`font shot qr dark` reports `could not allocate 24642 B for the snapshot`. Reserving the pixel
+buffer early did not help, and the reason is now clear: once the setup screen and its code
+buffer are up, there is simply not a 24 KB contiguous block left to allocate — the free total
+is around 31 KB, but fragmented. The next attempt should use a narrower snapshot format (1 bit
+per pixel is 1,541 bytes for this object, and A8 is 12,321) rather than the 16-bit one.
+
+---
+
 ## 2026-10-14 — Session 19: the spoken-turn rules, settled before any provider is chosen
 
 **Status:** host-tested and building; **no device verification**, because the device's USB

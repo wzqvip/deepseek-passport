@@ -390,6 +390,11 @@ static void app_task(void *arg)
 {
     (void)arg;
 
+    // Reserved first, before the radio and the codec grow the heap and fragment it. This task
+    // owns the reservation because reserving means encoding a symbol, and the encoder needs
+    // about six kilobytes of stack.
+    qr_reserve();
+
     // Join the network once at start. A configured device should come up online without
     // anyone pressing anything, and this task is allowed to block while it does — the
     // station only retried on a disconnect event before, so a reboot left it offline until
@@ -426,7 +431,9 @@ esp_err_t passport_app_start(void)
     bsp_lvgl_unlock();
 
     s_running = true;
-    if (xTaskCreate(app_task, "passport_app", 4608, NULL, 4, &s_task) != pdPASS) {
+    // 12288 rather than 4608: this task reserves the QR pixel buffer, and reserving it encodes
+    // a symbol, which needs about six kilobytes on top of the rest.
+    if (xTaskCreate(app_task, "passport_app", 12288, NULL, 4, &s_task) != pdPASS) {
         s_running = false;
         s_task = NULL;
         ESP_LOGE(TAG, "应用工作线程创建失败;界面仍可用,但电量不刷新");
@@ -441,9 +448,9 @@ esp_err_t passport_app_start(void)
     } else {
         ESP_LOGI(TAG, "音频通路已预热(16kHz/16bit/单声道)");
     }
-
-    // Before anything else grows the heap.
-    qr_reserve();
+    // The QR buffer is reserved by the worker task, not here: reserving it means encoding a
+    // symbol, and this function runs on the main task, whose stack cannot hold the encoder.
+    // Calling it here rebooted the device in a loop.
 
     // A device with no network configured has nothing to say and no way to be set up
     // without a cable, so it raises its own access point and says so on the panel.

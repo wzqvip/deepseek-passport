@@ -3,6 +3,12 @@
 // person setting it up points a phone at the panel, and the code carries the Wi-Fi details
 // so nobody types a password.
 //
+// **Stack: the encoder needs about six kilobytes.** Its working copy of the symbol and the
+// builder's module map are both automatic. Calling it from a small task — the main task is
+// 3584 bytes by default, the input task was 4096 — overflows the stack and panics, which on
+// this device looks like a reboot loop rather than a failed encode. Size the calling task for
+// it, or reach it from a worker that is already sized that way.
+//
 // Scope is deliberate rather than general: byte mode, error correction level L, versions 1
 // to 4. The longest thing this device encodes is a Wi-Fi join string, which is under 78
 // bytes, so the extra versions and levels would be code with no user.
