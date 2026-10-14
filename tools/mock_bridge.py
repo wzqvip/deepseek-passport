@@ -55,6 +55,9 @@ SCENARIOS = {
 ANSWERS = []
 LOCK = threading.Lock()
 
+# What the stand-in "hears". A real bridge returns whatever its STT provider produced.
+VOICE_TRANSCRIPT = "which branch should I deploy"
+
 
 class Handler(BaseHTTPRequestHandler):
     scenario = "waiting"
@@ -81,6 +84,45 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):  # noqa: N802
+        if self.path.rstrip("/") == "/voice":
+            # Push-to-talk audio. The device streams raw little-endian PCM as it records, with
+            # chunked transfer because the length is unknown when the request starts. A real bridge
+            # wraps this for whichever STT provider is configured; the stand-in counts it and
+            # answers with a fixed transcript.
+            length = self.headers.get("Transfer-Encoding", "").lower()
+            total = 0
+            if "chunked" in length:
+                # The device streams with chunked framing because the length is unknown when the
+                # request starts. Blank lines between chunks are tolerated: a parser that treats one
+                # as the end of the body silently reads nothing, which is exactly what happened the
+                # first time this ran.
+                while True:
+                    line = self.rfile.readline()
+                    if not line:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        size = int(line.split(b";")[0], 16)
+                    except ValueError:
+                        print(f"  not a chunk size: {line[:32]!r}", flush=True)
+                        break
+                    if size == 0:
+                        break
+                    body = self.rfile.read(size)
+                    total += len(body)
+                    self.rfile.readline()          # the CRLF after each chunk
+            else:
+                stated = int(self.headers.get("Content-Length", "0"))
+                total = len(self.rfile.read(stated)) if stated else 0
+
+            seconds = total / 2.0 / 16000.0
+            print(f"POST /voice -> {total} bytes of PCM ({seconds:.1f} s at 16 kHz); "
+                  f"answering with a fixed transcript", flush=True)
+            self._send(200, json.dumps({"text": VOICE_TRANSCRIPT}))
+            return
+
         if self.path.rstrip("/") != "/answer":
             self._send(404, json.dumps({"error": "not found"}))
             return

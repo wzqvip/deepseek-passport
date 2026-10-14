@@ -19,6 +19,85 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 27: push-to-talk streams audio, and a memory regression found on the way
+
+**Milestone, partial:** the microphone opens on the press, the speech streams to the bridge while it
+is still being recorded, and the bridge confirms the exact number of bytes. Reading the transcript
+back does not work yet, and that is the one thing left.
+
+### What was built
+
+`passport_speech` owns the audio and the socket; the turn rules stay in `passport_voice`, which was
+already pure and host-tested. A press opens the microphone, a release ends the turn, and OK is now
+push-to-talk rather than a text turn — one button, one meaning. Deep sleep moved to a double press of
+UP, because holding OK to speak and holding it to sleep cannot both be true.
+
+The recording is **streamed while it is captured**: 20 ms chunks, each written to the request body as
+it is read from the codec, so no buffer holds the whole utterance. That is not an optimisation. A few
+seconds of speech is tens of kilobytes and the device does not have them; the alternative designs
+were all rejected in the header of `passport_speech.h`, including the one that looks simplest — a
+bounded recording posted as a WAV — because a WAV needs its length in the first 44 bytes, which is
+exactly what an unknown-length recording does not have.
+
+The room's own level is measured during capture, and a recording below a threshold is treated as an
+empty room: the transcript is discarded rather than requested, which saves a provider call. The
+threshold is adjustable from the console, and it needed to be — see below.
+
+### Verified on the device
+
+```text
+voice hold / voice release, hold three seconds
+  the speech task logs (in Chinese, as it logs): recording started, held=1
+  the speech task logs: first chunk captured, capture=ESP_OK, held=1
+  the speech task logs: released after 213 chunks, 136320 bytes, rms=401 peak=1005
+  bridge log:      POST /voice -> 136320 bytes of PCM (4.3 s at 16 kHz)
+```
+
+The byte count is the check that matters: 213 chunks of 640 bytes is 136,320, and 136,320 bytes at
+16 kHz mono is 4.3 seconds, which is how long the button was held. **The audio really did leave the
+device while it was being recorded.**
+
+### The memory regression, which mattered more than the feature
+
+While testing this, `llm ask` began failing with `ESP_ERR_HTTP_CONNECT`. It was not the network. The
+device was nearly out of memory:
+
+```text
+[mem] free=4972 B  min=40 B  largest=1664 B      <- before
+[mem] free=50428 B min=43544 B largest=38912 B   <- after the fix
+```
+
+Two causes, both mine. **Thirty-two kilobytes of QR pixels were reserved at boot and held for the
+life of the device**, on the reasoning that reserving them made the join code's rendering certain.
+That certainty cost more than it was worth: with the buffer held, the largest free block at rest was
+7,680 bytes and a TLS session could no longer be allocated at all. The pixels are now allocated when
+the setup screen opens and released when it closes, which is sound precisely because provisioning and
+provider calls are never needed at the same moment. The second cause was four task stacks I had
+inflated defensively while chasing earlier faults; they are back to what their work actually needs.
+
+The fix is verified by the thing it broke: a full model round trip returns, with the certificate
+validated, a 492-byte answer, and 1,759 ms on the clock.
+
+### Two ESP-IDF behaviours found the hard way
+
+- **`esp_http_client` declares `Transfer-Encoding: chunked` when opened with a negative write length
+  and then writes the caller's bytes unframed.** The first bytes of the body are therefore read as a
+  chunk size by the server. This was found because this project's stand-in bridge logs what it cannot
+  parse, and what it logged was the first samples of the recording. The chunks are now framed by the
+  caller, with the reason recorded beside the code.
+- **After a chunked upload, the client cannot read the answer**: `fetch_headers` reports a transport
+  failure, and reading the data directly returns nothing, even though the server answered. The bridge
+  is known good — a hand-made chunked request to it returns `200` with the transcript. This is the
+  remaining defect.
+
+### Still not working, and exactly how
+
+The transcript never arrives, so the model is never asked and the voice turn is not complete. What is
+verified is the half that was in doubt — capture, streaming, byte-exact delivery — and the failure is
+now a specific, reproducible one on one side of a boundary that has been tested from both directions.
+
+---
+
 ## 2026-10-14 — Session 26: the web console covers every setting, and does not leak them
 
 **Milestone:** the device can be configured completely from a phone. Every setting the console can

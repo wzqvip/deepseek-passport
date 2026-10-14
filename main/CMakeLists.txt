@@ -18,6 +18,7 @@ idf_component_register(
          "passport_voice.c"
          "passport_notify.c"
          "passport_power.c"
+         "passport_speech.c"
          "passport_tone.c"
          "passport_work.c"
          "passport_work_client.c"

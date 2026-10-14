@@ -21,7 +21,7 @@ static const char *TAG = "passport_work_cl";
 // rather than a guess.
 #define STATUS_MAX 1024
 // The HTTP client needs a few kilobytes of stack for its own work even without TLS.
-#define CLIENT_STACK 8192
+#define CLIENT_STACK 5120
 #define URL_MAX 192
 
 static TaskHandle_t s_task;

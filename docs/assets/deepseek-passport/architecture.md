@@ -711,7 +711,11 @@ the join code on screen — the page buffer and the code's pixels are both held 
 measured 21,664 bytes and the largest block 11,264, which is less than half of what a
 handshake needs. That is not a defect to work around: a device being set up has nothing to
 say to a model yet. It does mean the two must never be started together, and that a future
-feature wanting both has to provision first and then release the portal.
+feature wanting both has to provision first and then release the portal. **The code's pixels
+are therefore no longer held for the life of the device** — they are allocated while the setup
+screen is open and released when it closes. That single change recovered the largest free block
+at rest from **7,680 bytes to 38,912**, and a TLS session became allocatable again; holding
+them had made `llm ask` fail outright, which is how the cost was found.
 
 Standing rules that follow from that:
 

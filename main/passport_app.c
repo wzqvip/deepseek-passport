@@ -31,6 +31,7 @@
 #include "passport_pet.h"
 #include "passport_power.h"
 #include "passport_provision.h"
+#include "passport_speech.h"
 #include "passport_qr.h"
 #include "passport_utf8.h"
 #include "passport_wifi.h"
@@ -265,27 +266,21 @@ static int qr_render(void)
 // contiguous, which is not enough for a snapshot of the same code — the verification tool was
 // starved by the thing it was trying to verify. Reserving first also matches the rule this
 // project follows elsewhere: allocate a hot buffer once.
-static void qr_reserve(void)
+// The QR pixels are allocated when the setup screen opens and released when it closes.
+//
+// They used to be reserved once at boot, so that the verification could not be starved by the thing
+// it was trying to verify. That reasoning stopped paying for itself: the buffer is tens of kilobytes
+// — 32,768 of them for a 128-pixel code — and holding it for the life of the device left too little
+// contiguous heap for anything else. It was measured, not guessed: with the buffer held, the largest
+// free block at rest was 7,680 bytes, and `llm ask` failed with ESP_ERR_HTTP_CONNECT because a TLS
+// session could no longer be allocated. Provisioning and provider calls are never needed at the same
+// moment, so the pixels only need to exist while the screen that shows them does.
+static void qr_release(void)
 {
-    char payload[192];
-    qr_payload(payload, sizeof(payload));
-
-    passport_qr_t code;
-    if (!passport_qr_encode(payload, &code)) {
-        return;
-    }
-    const int modules = (int)code.size + 2 * QR_QUIET_ZONE;
-    int scale = QR_TARGET_SIDE / modules;
-    if (scale < 2) {
-        scale = 2;
-    }
-    const int side = modules * scale;
-
-    s_qr_pixels = heap_caps_malloc((size_t)side * (size_t)side * sizeof(uint16_t),
-                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    s_qr_side = (s_qr_pixels != NULL) ? side : 0;
     if (s_qr_pixels != NULL) {
-        ESP_LOGI(TAG, "二维码缓冲已预留:%d 字节(%d 像素)", side * side * 2, side);
+        heap_caps_free(s_qr_pixels);
+        s_qr_pixels = NULL;
+        s_qr_side = 0;
     }
 }
 
@@ -370,6 +365,10 @@ void passport_app_show_home(void)
     s_on_setup = false;
     s_on_work = false;
     bsp_lvgl_unlock();
+
+    // Leaving the setup screen releases the join code's pixels: see qr_release() for why they are
+    // not held for the life of the device.
+    qr_release();
 }
 
 // --- work screen ------------------------------------------------------------
@@ -556,10 +555,10 @@ static void app_task(void *arg)
 {
     (void)arg;
 
-    // Reserved first, before the radio and the codec grow the heap and fragment it. This task
-    // owns the reservation because reserving means encoding a symbol, and the encoder needs
-    // about six kilobytes of stack.
-    qr_reserve();
+    // No QR reservation here any more. The pixels are allocated when the setup screen opens, which
+    // is a few milliseconds before the code is drawn, and released when it closes. Holding tens of
+    // kilobytes for the life of the device to make that allocation certain cost more than the
+    // uncertainty did: it is what stopped a TLS session from being allocated at all.
 
     // Join the network once at start. A configured device should come up online without
     // anyone pressing anything, and this task is allowed to block while it does — the
@@ -601,7 +600,7 @@ esp_err_t passport_app_start(void)
     s_running = true;
     // 12288 rather than 4608: this task reserves the QR pixel buffer, and reserving it encodes
     // a symbol, which needs about six kilobytes on top of the rest.
-    if (xTaskCreate(app_task, "passport_app", 12288, NULL, 4, &s_task) != pdPASS) {
+    if (xTaskCreate(app_task, "passport_app", 10240, NULL, 4, &s_task) != pdPASS) {
         s_running = false;
         s_task = NULL;
         ESP_LOGE(TAG, "应用工作线程创建失败;界面仍可用,但电量不刷新");
@@ -691,10 +690,10 @@ void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
     }
 
     if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-        // Deep sleep, waking on any key. This replaces the earlier "standby preview", which only
-        // drew a sleeping face and saved nothing.
+        // No longer a sleep gesture: holding OK now means talking. Deep sleep is on a double press
+        // of UP. This branch stays only to swallow the long-press that a long utterance produces,
+        // which would otherwise fall through to the release handling.
         bsp_lvgl_unlock();
-        passport_power_sleep(0u);
         return;
     }
 
@@ -716,6 +715,28 @@ void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
         return;
     }
 
+    if (ev == BSP_BTN_PRESS && btn == BSP_BTN_OK) {
+        // Push-to-talk: the microphone opens on the press and the turn is sent on the release.
+        // The worker does the audio and the network; this task only records the intent.
+        bsp_lvgl_unlock();
+        passport_speech_talk_down();
+        return;
+    }
+
+    if (ev == BSP_BTN_RELEASE && btn == BSP_BTN_OK) {
+        bsp_lvgl_unlock();
+        passport_speech_talk_up();
+        return;
+    }
+
+    if (btn == BSP_BTN_UP && ev == BSP_BTN_DOUBLE) {
+        // Deep sleep moved here when OK became the talk button: holding OK to speak and holding it
+        // to sleep cannot both be true. A double press is deliberate enough to be safe.
+        bsp_lvgl_unlock();
+        passport_power_sleep(0u);
+        return;
+    }
+
     if (ev != BSP_BTN_CLICK) {
         bsp_lvgl_unlock();
         return;
@@ -723,13 +744,10 @@ void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
 
     switch (btn) {
     case BSP_BTN_OK:
-        // Start a conversational turn. The network work belongs to the chat worker, so
-        // this task only queues it — and it releases the lock first, because the worker
-        // takes the same lock to show the thinking expression.
+        // A tap of OK is a very short recording, which the voice path reports as "nothing heard".
+        // It deliberately does not also start a text turn: one button, one meaning. The text-only
+        // turn is still available from the console as "llm ask".
         bsp_lvgl_unlock();
-        if (passport_chat_ask(DEFAULT_PROMPT) != ESP_OK) {
-            passport_app_show_error("One moment, still thinking.");
-        }
         return;
     case BSP_BTN_UP:
     case BSP_BTN_DOWN: {
@@ -790,6 +808,20 @@ void passport_app_show_error(const char *reason)
     }
     set_mood(PASSPORT_PET_DISTRESSED, 4000u);
     set_bubble((reason != NULL) ? reason : "Something went wrong.");
+    bsp_lvgl_unlock();
+}
+
+void passport_app_show_status(const char *text, passport_pet_mood_t mood)
+{
+    if (!bsp_lvgl_lock(500)) {
+        return;
+    }
+    // The mood goes first: set_mood() writes that mood's stock line into the bubble, so a status
+    // written before it would be overwritten a moment later.
+    set_mood(mood, 0);
+    if (text != NULL && text[0] != '\0') {
+        set_bubble(text);
+    }
     bsp_lvgl_unlock();
 }
 

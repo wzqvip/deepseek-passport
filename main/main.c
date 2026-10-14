@@ -22,6 +22,7 @@
 #include "passport_notify.h"
 #include "passport_pet_assets.h"
 #include "passport_power.h"
+#include "passport_speech.h"
 #include "passport_work_client.h"
 #include "lvgl.h"
 #include "esp_log.h"
@@ -62,7 +63,7 @@ static esp_err_t input_dispatch_init(void) {
     // six kilobytes of stack between the encoder's working copy and the builder's module
     // map. At 4096 the press overflowed the stack and the device rebooted, which looked
     // like the access point switching itself off.
-    if (xTaskCreate(input_task, "passport_input", 12288, NULL, 5, &s_input_task) != pdPASS) {
+    if (xTaskCreate(input_task, "passport_input", 6144, NULL, 5, &s_input_task) != pdPASS) {
         vQueueDelete(s_input_queue);
         s_input_queue = NULL;
         return ESP_ERR_NO_MEM;
@@ -185,6 +186,12 @@ void app_main(void) {
     // console tasks never have to host network work.
     if (passport_chat_start() != ESP_OK) {
         ESP_LOGE(TAG, "对话线程启动失败;按 OK 将无法提问");
+    }
+
+    // Push-to-talk. The recording is streamed, so it needs a task of its own that is allowed to
+    // block on the audio path and the socket.
+    if (passport_speech_start() != ESP_OK) {
+        ESP_LOGE(TAG, "语音线程启动失败;按住 OK 将无法说话");
     }
 
     // Work mode's bridge client. Its own task, because polling and posting are network work.

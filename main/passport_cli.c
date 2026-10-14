@@ -29,6 +29,7 @@
 #include "lvgl.h"
 #include "passport_app.h"
 #include "passport_audio.h"
+#include "passport_chat.h"
 #include "passport_config.h"
 #include "passport_config_store.h"
 #include "passport_http.h"
@@ -40,6 +41,7 @@
 #include "passport_power.h"
 #include "passport_provision.h"
 #include "passport_qr.h"
+#include "passport_speech.h"
 #include "passport_work.h"
 #include "passport_work_client.h"
 #include "passport_wifi.h"
@@ -948,6 +950,88 @@ static void print_work_view(const passport_work_view_t *view)
     }
 }
 
+static int cmd_voice(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("usage: voice <status|hold|release|gate [peak]|say <text>>\n");
+        printf("  status       the turn state, the microphone, and the last transcript\n");
+        printf("  hold/release drive a push-to-talk turn without a finger on the button\n");
+        printf("  gate [peak]  show or set the silence threshold (0 disables it)\n");
+        printf("  say <text>   feed a transcript straight to the model, skipping the recording\n");
+        return 1;
+    }
+
+    if (strcmp(argv[1], "status") == 0) {
+        char report[256];
+        passport_speech_report(report, sizeof(report));
+        printf("voice: %s\n", report);
+        printf("voice config: stt_base_url=%s stt_model=%s tts_voice=%s\n",
+               (passport_config_current()->stt_base_url[0] != '\0')
+                   ? passport_config_current()->stt_base_url : "(empty)",
+               (passport_config_current()->stt_model[0] != '\0')
+                   ? passport_config_current()->stt_model : "(empty)",
+               (passport_config_current()->tts_voice[0] != '\0')
+                   ? passport_config_current()->tts_voice : "(empty)");
+        return 0;
+    }
+
+    if (strcmp(argv[1], "gate") == 0) {
+        if (argc < 3) {
+            printf("voice gate: %d (peak below this counts as an empty room; 0 disables)\n",
+                   passport_speech_silence_peak());
+            return 0;
+        }
+        const int value = atoi(argv[2]);
+        if (value < 0) {
+            printf("voice gate: a negative gate is meaningless\n");
+            return 1;
+        }
+        passport_speech_set_silence_peak(value);
+        printf("voice gate: %d\n", passport_speech_silence_peak());
+        return 0;
+    }
+
+    if (strcmp(argv[1], "hold") == 0) {
+        passport_speech_talk_down();
+        printf("voice hold: the microphone should be open (see \"voice status\")\n");
+        return 0;
+    }
+
+    if (strcmp(argv[1], "release") == 0) {
+        passport_speech_talk_up();
+        printf("voice release: the turn is finishing on the speech task\n");
+        return 0;
+    }
+
+    if (strcmp(argv[1], "say") == 0) {
+        if (argc < 3) {
+            printf("usage: voice say <text>\n");
+            return 1;
+        }
+        static char sentence[256];
+        size_t used = 0u;
+        sentence[0] = '\0';
+        for (int i = 2; i < argc; i++) {
+            const size_t n = strlen(argv[i]);
+            if (used + n + 2u >= sizeof(sentence)) {
+                break;
+            }
+            if (used > 0u) {
+                sentence[used++] = ' ';
+            }
+            memcpy(sentence + used, argv[i], n);
+            used += n;
+            sentence[used] = '\0';
+        }
+        const esp_err_t err = passport_chat_ask(sentence);
+        printf("voice say: %s\n", esp_err_to_name(err));
+        return (err == ESP_OK) ? 0 : 1;
+    }
+
+    printf("voice: unknown subcommand \"%s\"\n", argv[1]);
+    return 1;
+}
+
 static int cmd_power(int argc, char **argv)
 {
     if (argc < 2) {
@@ -1518,6 +1602,7 @@ esp_err_t passport_cli_start(void)
     register_command("work", "Work mode: feed <json> | key <up|down|ok> | show | screen | poll | answer | client", &cmd_work);
     register_command("notify", "Notification chimes: test [question|done|failed] | status", &cmd_notify);
     register_command("power", "Standby: status | screen on|off | sleep [seconds]", &cmd_power);
+    register_command("voice", "Push-to-talk: status | hold | release | say <text>", &cmd_voice);
     register_command("config", "Configuration: list | get | set | save | reset", &cmd_config);
     register_command("audio", "Audio path: status | tone [ms] | loopback [ms] | mute-check", &cmd_audio);
     register_command("ui", "Screen inspection: tree | names | get | tap | key | screen", &cmd_ui);

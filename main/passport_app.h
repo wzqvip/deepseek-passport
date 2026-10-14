@@ -6,6 +6,7 @@
 
 #include "bsp_button.h"
 #include "esp_err.h"
+#include "passport_pet.h"
 #include "passport_work.h"
 
 // Build the application UI and start its worker task. Takes the LVGL lock itself.
@@ -19,6 +20,10 @@ void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev);
 void passport_app_begin_turn(const char *prompt);
 void passport_app_show_reply(const char *text);
 void passport_app_show_error(const char *reason);
+
+// Say what the device is doing right now, with the expression that goes with it: listening,
+// transcribing, hearing nothing. Also takes the LVGL lock itself.
+void passport_app_show_status(const char *text, passport_pet_mood_t mood);
 
 // Switch between the home screen and the setup screen that shows the hotspot credentials.
 void passport_app_show_setup(void);
