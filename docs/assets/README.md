@@ -30,6 +30,7 @@ proposed back upstream.
 | [Roadmap](deepseek-passport/roadmap.md) | Milestones, exit criteria, and the validation plan |
 | [Bridge protocol](deepseek-passport/bridge-protocol.md) | The contract between the device and its companion bridge: transport, the status document, the answer, and what the device deliberately does not do |
 | [Progress log](deepseek-passport/progress-log.md) | Dated decisions, evidence, verification status, and open items |
+| [Handover](deepseek-passport/handover.md) | What the device is, how to flash and use it, the bridge it needs, and an explicit list of what is verified and what is not |
 | [Serial console](deepseek-passport/serial-cli.md) | The serial console: how screen elements and console commands stay in correspondence, the command list, and its contracts |
 
 ## Related

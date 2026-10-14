@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-planning-f59e0b?style=flat-square" alt="Status: planning">
+  <img src="https://img.shields.io/badge/status-firmware%20verified-16a34a?style=flat-square" alt="Status: firmware verified on hardware">
   <img src="https://img.shields.io/badge/target-ESP32--C3-2563eb?style=flat-square" alt="Target: ESP32-C3">
   <img src="https://img.shields.io/badge/upstream-FoloToy%2Fai--passport-14b8a6?style=flat-square" alt="Upstream: FoloToy ai-passport">
   <img src="https://img.shields.io/badge/License-MIT-64748b?style=flat-square" alt="MIT License">
@@ -28,10 +28,15 @@ companion bridge, and design documentation layered on top of the upstream board
 support package.
 
 > [!IMPORTANT]
-> This project is at the **planning stage**. The requirements, the architecture,
-> the memory budget, and the milestone plan are written and reviewed; no
-> application firmware has been implemented yet. See
-> [design records](docs/assets/deepseek-passport/requirements.md).
+> The application is **implemented and running on hardware**. The upstream demo menu, screens and
+> visual shell are gone; the device boots into this project's own interface. Every milestone has been
+> verified on the board over the serial console, and the parts that have *not* been verified are listed
+> explicitly rather than left implied — see the [handover](docs/assets/deepseek-passport/handover.md)
+> and the [progress log](docs/assets/deepseek-passport/progress-log.md).
+>
+> One piece is not written yet: the companion bridge, which is a program for a computer rather than
+> firmware. Its contract is complete and the device has been verified against a stand-in
+> implementation of it.
 
 ## What it does
 
@@ -76,6 +81,10 @@ empty on purpose. These are the authoritative documents for this project.
 | [Architecture](docs/assets/deepseek-passport/architecture.md) | Hardware constraints, memory budget, firmware and bridge architecture, voice pipeline, DSH integration, provisioning, pixel UI, and provider configuration |
 | [Roadmap](docs/assets/deepseek-passport/roadmap.md) | Milestones `M0`–`M7` with deliverables, entry and exit criteria, and the validation plan |
 | [Progress log](docs/assets/deepseek-passport/progress-log.md) | Dated record of decisions, evidence, and what remains open |
+| [Handover](docs/assets/deepseek-passport/handover.md) | How to flash and use the device, the bridge it needs, and an explicit list of what is verified and what is not |
+| [Bridge protocol](docs/assets/deepseek-passport/bridge-protocol.md) | The contract between the device and its companion bridge |
+| [Serial console](docs/assets/deepseek-passport/serial-cli.md) | The console used to verify everything, and the contracts it keeps |
+| [Voice back ends](docs/assets/deepseek-passport/voice-backends.md) | The provider survey behind the voice pipeline decision |
 
 ## Repository layout and fork policy
 
@@ -122,7 +131,7 @@ device test results separately.
 
 | Project | Branch | Status |
 | --- | --- | --- |
-| DeepSeek Passport firmware | `feature/deepseek-passport` (planned) | Planning |
+| DeepSeek Passport firmware | `feature/deepseek-passport` (implemented, verified on hardware) | Active |
 
 ## License
 

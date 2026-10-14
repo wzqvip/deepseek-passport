@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-planning-f59e0b?style=flat-square" alt="状态：规划中">
+  <img src="https://img.shields.io/badge/status-firmware%20verified-16a34a?style=flat-square" alt="状态：固件已在真机验证">
   <img src="https://img.shields.io/badge/target-ESP32--C3-2563eb?style=flat-square" alt="目标：ESP32-C3">
   <img src="https://img.shields.io/badge/upstream-FoloToy%2Fai--passport-14b8a6?style=flat-square" alt="上游：FoloToy ai-passport">
   <img src="https://img.shields.io/badge/License-MIT-64748b?style=flat-square" alt="MIT 许可证">
@@ -26,8 +26,13 @@ DeepSeek Harness（DSH）会话的遥控器与通知面板。
 与设计文档。
 
 > [!IMPORTANT]
-> 本项目处于 **规划阶段**。需求、架构、内存预算与里程碑计划已经写入并通过评审；
-> 应用固件尚未开始实现。见[设计记录](docs/assets/deepseek-passport/requirements.zh_CN.md)。
+> 应用**已经实现并在真机上运行**。上游 demo 的菜单、屏幕与视觉外壳已经删除;设备开机进入的是本项目自己的
+> 界面。每个里程碑都在串口控制台上于真机验证过,而**没有**验证的部分会被明确列出而不是含糊带过——
+> 见[交付说明](docs/assets/deepseek-passport/handover.zh_CN.md)与
+> [进度日志](docs/assets/deepseek-passport/progress-log.zh_CN.md)。
+>
+> 还差一块没写的是**配套桥接服务**——那是跑在电脑上的程序,不是固件。它的契约已经完整,而且设备是对着
+> 它的一份替身实现验证过的。
 
 ## 它能做什么
 
@@ -69,6 +74,10 @@ Fork 私有的产品设计放在 `docs/assets/`，上游有意让该目录保持
 | [架构设计](docs/assets/deepseek-passport/architecture.zh_CN.md) | 硬件约束、内存预算、固件与桥接架构、语音链路、DSH 联动、配网、像素 UI 与服务商配置 |
 | [路线图](docs/assets/deepseek-passport/roadmap.zh_CN.md) | 里程碑 `M0`–`M7` 的交付物、进入/退出标准与验证计划 |
 | [进度日志](docs/assets/deepseek-passport/progress-log.zh_CN.md) | 按日期记录决策、证据与未决事项 |
+| [交付说明](docs/assets/deepseek-passport/handover.zh_CN.md) | 怎么烧与怎么用、它需要什么桥接服务，以及一份明确的「已验证 / 未验证」清单 |
+| [桥接协议](docs/assets/deepseek-passport/bridge-protocol.zh_CN.md) | 设备与其配套桥接服务之间的契约 |
+| [串口控制台](docs/assets/deepseek-passport/serial-cli.zh_CN.md) | 用来验证一切的控制台，以及它遵守的两条契约 |
+| [语音后端](docs/assets/deepseek-passport/voice-backends.zh_CN.md) | 语音流水线决策背后的提供商调研 |
 
 ## 仓库结构与 Fork 约定
 
@@ -114,7 +123,7 @@ sdkconfig.defaults、partitions.csv 上游构建基线
 
 | 项目 | 分支 | 状态 |
 | --- | --- | --- |
-| DeepSeek Passport 固件 | `feature/deepseek-passport`（计划中） | 规划中 |
+| DeepSeek Passport 固件 | `feature/deepseek-passport`（已实现，并在真机验证过） | 进行中 |
 
 ## 许可证
 
