@@ -69,6 +69,33 @@ person with a USB power meter can read the number. It therefore stays under
 - The firmware will read its Wi-Fi credentials from Kconfig, so a real SSID and
   password live only in the gitignored `sdkconfig` and never in source.
 
+### The product owner's hands-on test of the flashed demo
+
+The owner exercised the flashed baseline application and reported that everything
+works, with one observation: waking from deep sleep restarts the application.
+
+That is the documented contract, not a defect. `esp_deep_sleep_start()` does not
+return; the chip resets and the application boots fresh. The repository's own
+reference note records the same behaviour on this board, including that the USB
+Serial/JTAG console goes down for the duration of deep sleep and returns after the
+wake, and that the boot log prints the wake cause — which is the documented way to
+confirm a wake source on real hardware.
+
+Two consequences worth keeping:
+
+- **Light sleep is different.** It resumes in place and does not restart. A design
+  that needs a seamless resume must use light sleep or the always-connected
+  profile, which is the default the owner already chose (`Q-8`). The shipped
+  default therefore will not restart on idle.
+- **Deep sleep is why the console vanished** during the first flash attempt, and
+  it is why the baseline demo's Low Power page is not a debugging tool while a
+  host is attached to the USB port.
+
+Unverified: the observation was not instrumented. No serial capture of the wake
+cause was taken at the time, so the wake source rests on documentation rather than
+on a log from this device. A future capture of the wake-cause line would close
+that gap.
+
 ### Validation for this session
 
 | Check | Result |

@@ -1,0 +1,477 @@
+// main/passport_cli.c
+//
+// A serial console that lets a host inspect the live LVGL tree and drive the
+// device through the same input path a person uses.
+//
+// Design notes:
+//   * Element identity comes from LVGL's named-object support, not from a
+//     parallel table. `ui tree` prints the resolved name of every object, so the
+//     name printed for a widget is exactly the name `ui get`/`ui tap` accept.
+//   * Every LVGL access happens under bsp_lvgl_lock(), because this runs in the
+//     console task and LVGL is not thread-safe.
+//   * Button injection goes through the application sink, so navigation behaves
+//     identically to a physical press.
+#include "passport_cli.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "bsp_battery.h"
+#include "bsp_button.h"
+#include "bsp_display.h"
+#include "esp_app_desc.h"
+#include "esp_console.h"
+#include "esp_heap_caps.h"
+#include "esp_system.h"
+#include "esp_timer.h"
+#include "lvgl.h"
+
+#define CLI_NAME_MAX 96
+#define CLI_TAP_ANCESTOR_MAX 6
+
+static passport_cli_key_sink_t s_key_sink;
+static bool s_started;
+
+// --- helpers ----------------------------------------------------------------
+
+// lv_obj_class_t is opaque outside LVGL's private headers, so the class is
+// identified by comparing the public class symbols rather than reading a field.
+// The object's *name* is the meaningful identifier for the console anyway.
+static const char *class_name(const lv_obj_t *obj)
+{
+    const lv_obj_class_t *cls = lv_obj_get_class(obj);
+    if (cls == &lv_label_class) {
+        return "label";
+    }
+    if (cls == &lv_obj_class) {
+        return "obj";
+    }
+    return "widget";
+}
+
+// Printable text of a label, or NULL for anything else.
+static const char *label_text(const lv_obj_t *obj)
+{
+    if (lv_obj_get_class(obj) != &lv_label_class) {
+        return NULL;
+    }
+    return lv_label_get_text(obj);
+}
+
+static void print_metrics(const char *tag)
+{
+    const size_t free_heap = esp_get_free_heap_size();
+    const size_t min_heap = esp_get_minimum_free_heap_size();
+    const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+    printf("[%s] free=%u B (%u KiB)  min=%u B  largest=%u B (%u KiB)\n",
+           tag, (unsigned)free_heap, (unsigned)(free_heap / 1024u),
+           (unsigned)min_heap, (unsigned)largest, (unsigned)(largest / 1024u));
+
+    if (bsp_lvgl_lock(500)) {
+        lv_mem_monitor_t mon;
+        lv_mem_monitor(&mon);
+        printf("[%s] lvgl free=%u biggest=%u frag=%u%% max_used=%u\n",
+               tag, (unsigned)mon.free_size, (unsigned)mon.free_biggest_size,
+               (unsigned)mon.frag_pct, (unsigned)mon.max_used);
+        bsp_lvgl_unlock();
+    } else {
+        printf("[%s] lvgl metrics unavailable: LVGL lock timeout\n", tag);
+    }
+}
+
+// --- ui commands ------------------------------------------------------------
+
+static void walk_tree(lv_obj_t *obj, int depth, int max_depth)
+{
+    char name[CLI_NAME_MAX];
+    char textbuf[CLI_NAME_MAX + 8];
+    lv_obj_get_name_resolved(obj, name, sizeof(name));
+
+    const char *text = label_text(obj);
+    if (text != NULL) {
+        snprintf(textbuf, sizeof(textbuf), "  \"%s\"", text);
+    } else {
+        textbuf[0] = '\0';
+    }
+
+    printf("%*s%-26s %-10s %4d,%4d %4dx%-4d%s%s\n", depth * 2, "", name, class_name(obj),
+           (int)lv_obj_get_x(obj), (int)lv_obj_get_y(obj),
+           (int)lv_obj_get_width(obj), (int)lv_obj_get_height(obj),
+           lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN) ? " hidden" : "", textbuf);
+
+    if (depth >= max_depth) {
+        const uint32_t children = lv_obj_get_child_count(obj);
+        if (children > 0u) {
+            printf("%*s... %u child object(s) below\n", (depth + 1) * 2, "", (unsigned)children);
+        }
+        return;
+    }
+    const uint32_t count = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0u; i < count; i++) {
+        walk_tree(lv_obj_get_child(obj, (int32_t)i), depth + 1, max_depth);
+    }
+}
+
+// Resolve a name path or a search term against the active screen.
+static lv_obj_t *resolve(const char *term)
+{
+    lv_obj_t *screen = lv_screen_active();
+    if (screen == NULL) {
+        return NULL;
+    }
+    lv_obj_t *obj = lv_obj_get_child_by_name(screen, term);
+    if (obj == NULL) {
+        obj = lv_obj_find_by_name(screen, term);
+    }
+    return obj;
+}
+
+// A tap should land on something clickable: if the named object is a plain
+// label, walk up to the nearest clickable ancestor, which is what a finger
+// actually hits.
+static lv_obj_t *clickable_target(lv_obj_t *obj)
+{
+    lv_obj_t *cur = obj;
+    for (int i = 0; i < CLI_TAP_ANCESTOR_MAX && cur != NULL; i++) {
+        if (lv_obj_has_flag(cur, LV_OBJ_FLAG_CLICKABLE)) {
+            return cur;
+        }
+        cur = lv_obj_get_parent(cur);
+    }
+    return obj;
+}
+
+static int cmd_ui_tree(int argc, char **argv)
+{
+    int max_depth = 6;
+    if (argc > 1) {
+        max_depth = atoi(argv[1]);
+        if (max_depth < 0) {
+            max_depth = 0;
+        }
+    }
+    if (!bsp_lvgl_lock(1000)) {
+        printf("ui tree: LVGL lock timeout\n");
+        return 1;
+    }
+    lv_obj_t *screen = lv_screen_active();
+    if (screen == NULL) {
+        printf("ui tree: no active screen\n");
+        bsp_lvgl_unlock();
+        return 1;
+    }
+    printf("active screen:\n");
+    walk_tree(screen, 0, max_depth);
+    bsp_lvgl_unlock();
+    return 0;
+}
+
+// Print every object as a path relative to the active screen. These are exactly
+// the strings that `ui get` and `ui tap` accept, which is what ties the console
+// list to what is drawn on the display.
+static void print_names(lv_obj_t *obj, const char *prefix)
+{
+    char name[CLI_NAME_MAX];
+    char path[CLI_NAME_MAX * 2];
+    lv_obj_get_name_resolved(obj, name, sizeof(name));
+    if (prefix[0] == '\0') {
+        snprintf(path, sizeof(path), "%s", name);
+    } else {
+        snprintf(path, sizeof(path), "%s/%s", prefix, name);
+    }
+    const char *text = label_text(obj);
+    if (text != NULL) {
+        printf("%-34s %-10s \"%s\"\n", path, class_name(obj), text);
+    } else {
+        printf("%-34s %s\n", path, class_name(obj));
+    }
+    const uint32_t count = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0u; i < count; i++) {
+        print_names(lv_obj_get_child(obj, (int32_t)i), path);
+    }
+}
+
+static int cmd_ui_names(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    if (!bsp_lvgl_lock(1000)) {
+        printf("ui names: LVGL lock timeout\n");
+        return 1;
+    }
+    lv_obj_t *screen = lv_screen_active();
+    if (screen == NULL) {
+        printf("ui names: no active screen\n");
+        bsp_lvgl_unlock();
+        return 1;
+    }
+    char sname[CLI_NAME_MAX];
+    lv_obj_get_name_resolved(screen, sname, sizeof(sname));
+    printf("%-34s %-10s (active screen)\n", sname, class_name(screen));
+    const uint32_t count = lv_obj_get_child_count(screen);
+    for (uint32_t i = 0u; i < count; i++) {
+        print_names(lv_obj_get_child(screen, (int32_t)i), "");
+    }
+    bsp_lvgl_unlock();
+    return 0;
+}
+
+static int cmd_ui_get(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("usage: ui get <name-or-path>\n");
+        return 1;
+    }
+    if (!bsp_lvgl_lock(1000)) {
+        printf("ui get: LVGL lock timeout\n");
+        return 1;
+    }
+    lv_obj_t *obj = resolve(argv[1]);
+    if (obj == NULL) {
+        printf("ui get: nothing named \"%s\" on the active screen\n", argv[1]);
+        bsp_lvgl_unlock();
+        return 1;
+    }
+    char name[CLI_NAME_MAX];
+    lv_obj_get_name_resolved(obj, name, sizeof(name));
+    const char *text = label_text(obj);
+    printf("%-26s %-10s %4d,%4d %4dx%-4d%s%s\n", name, class_name(obj),
+           (int)lv_obj_get_x(obj), (int)lv_obj_get_y(obj),
+           (int)lv_obj_get_width(obj), (int)lv_obj_get_height(obj),
+           lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN) ? " hidden" : "",
+           lv_obj_has_flag(obj, LV_OBJ_FLAG_CLICKABLE) ? " clickable" : "");
+    if (text != NULL) {
+        printf("text: %s\n", text);
+    }
+    bsp_lvgl_unlock();
+    return 0;
+}
+
+static int cmd_ui_tap(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("usage: ui tap <name-or-path>\n");
+        return 1;
+    }
+    if (!bsp_lvgl_lock(1000)) {
+        printf("ui tap: LVGL lock timeout\n");
+        return 1;
+    }
+    lv_obj_t *obj = resolve(argv[1]);
+    if (obj == NULL) {
+        printf("ui tap: nothing named \"%s\" on the active screen\n", argv[1]);
+        bsp_lvgl_unlock();
+        return 1;
+    }
+    lv_obj_t *target = clickable_target(obj);
+    char name[CLI_NAME_MAX];
+    lv_obj_get_name_resolved(target, name, sizeof(name));
+    const lv_result_t res = lv_obj_send_event(target, LV_EVENT_CLICKED, NULL);
+    printf("ui tap: sent CLICKED to %s (%s) -> %s\n", name, class_name(target),
+           res == LV_RESULT_OK ? "handled" : "no handler / deleted");
+    bsp_lvgl_unlock();
+    return 0;
+}
+
+static int cmd_ui_screen(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    if (!bsp_lvgl_lock(1000)) {
+        printf("ui screen: LVGL lock timeout\n");
+        return 1;
+    }
+    lv_obj_t *screen = lv_screen_active();
+    if (screen == NULL) {
+        printf("ui screen: no active screen\n");
+        bsp_lvgl_unlock();
+        return 1;
+    }
+    char name[CLI_NAME_MAX];
+    lv_obj_get_name_resolved(screen, name, sizeof(name));
+    printf("screen %s  %dx%d  children=%u\n", name,
+           (int)lv_obj_get_width(screen), (int)lv_obj_get_height(screen),
+           (unsigned)lv_obj_get_child_count(screen));
+    bsp_lvgl_unlock();
+    return 0;
+}
+
+static bool parse_btn(const char *s, bsp_btn_t *out)
+{
+    if (strcmp(s, "up") == 0) { *out = BSP_BTN_UP; return true; }
+    if (strcmp(s, "down") == 0) { *out = BSP_BTN_DOWN; return true; }
+    if (strcmp(s, "ok") == 0) { *out = BSP_BTN_OK; return true; }
+    return false;
+}
+
+static bool parse_ev(const char *s, bsp_btn_ev_t *out)
+{
+    if (strcmp(s, "press") == 0) { *out = BSP_BTN_PRESS; return true; }
+    if (strcmp(s, "click") == 0) { *out = BSP_BTN_CLICK; return true; }
+    if (strcmp(s, "double") == 0) { *out = BSP_BTN_DOUBLE; return true; }
+    if (strcmp(s, "long") == 0) { *out = BSP_BTN_LONG; return true; }
+    if (strcmp(s, "release") == 0) { *out = BSP_BTN_RELEASE; return true; }
+    return false;
+}
+
+static int cmd_ui_key(int argc, char **argv)
+{
+    if (argc < 3) {
+        printf("usage: ui key <up|down|ok> <press|click|double|long|release>\n");
+        return 1;
+    }
+    bsp_btn_t btn;
+    bsp_btn_ev_t ev;
+    if (!parse_btn(argv[1], &btn)) {
+        printf("ui key: unknown button \"%s\"\n", argv[1]);
+        return 1;
+    }
+    if (!parse_ev(argv[2], &ev)) {
+        printf("ui key: unknown event \"%s\"\n", argv[2]);
+        return 1;
+    }
+    if (s_key_sink == NULL) {
+        printf("ui key: no input sink registered by the application\n");
+        return 1;
+    }
+    s_key_sink(btn, ev);
+    printf("ui key: injected %s %s\n", argv[1], argv[2]);
+    return 0;
+}
+
+// --- app and system commands ------------------------------------------------
+
+static int cmd_ver(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    const esp_app_desc_t *app = esp_app_get_description();
+    printf("project   : %s\n", app->project_name);
+    printf("version   : %s\n", app->version);
+    printf("built     : %s %s\n", app->date, app->time);
+    printf("esp-idf   : %s\n", app->idf_ver);
+    return 0;
+}
+
+static int cmd_app(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    const int soc = bsp_battery_soc();
+    printf("uptime    : %lld ms\n", (long long)(esp_timer_get_time() / 1000));
+    printf("battery   : %s\n", soc >= 0 ? "" : "unavailable");
+    if (soc >= 0) {
+        printf("            soc=%d%%\n", soc);
+    }
+    printf("keypad    : %d mV\n", bsp_button_read_mv());
+    print_metrics("app");
+    return 0;
+}
+
+static int cmd_mem(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    print_metrics("mem");
+    return 0;
+}
+
+static int cmd_reboot(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    printf("rebooting\n");
+    fflush(stdout);
+    esp_restart();
+    return 0;  // not reached
+}
+
+static int cmd_ui(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("usage: ui <tree|names|get|tap|key|screen> [args]\n");
+        printf("  tree [depth]            dump the live object tree\n");
+        printf("  names                   list every object as a name path\n");
+        printf("  get <name-or-path>      print one object\n");
+        printf("  tap <name-or-path>      send a synthetic click\n");
+        printf("  key <up|down|ok> <ev>   inject a button event\n");
+        printf("  screen                  active screen summary\n");
+        return 1;
+    }
+    const char *sub = argv[1];
+    if (strcmp(sub, "tree") == 0)   { return cmd_ui_tree(argc - 1, argv + 1); }
+    if (strcmp(sub, "names") == 0)  { return cmd_ui_names(argc - 1, argv + 1); }
+    if (strcmp(sub, "get") == 0)    { return cmd_ui_get(argc - 1, argv + 1); }
+    if (strcmp(sub, "tap") == 0)    { return cmd_ui_tap(argc - 1, argv + 1); }
+    if (strcmp(sub, "key") == 0)    { return cmd_ui_key(argc - 1, argv + 1); }
+    if (strcmp(sub, "screen") == 0) { return cmd_ui_screen(argc - 1, argv + 1); }
+    printf("ui: unknown subcommand \"%s\"\n", sub);
+    return 1;
+}
+
+// --- registration -----------------------------------------------------------
+
+typedef int (*cli_func_t)(int argc, char **argv);
+
+static void register_command(const char *command, const char *help, cli_func_t func)
+{
+    const esp_console_cmd_t cmd = {
+        .command = command,
+        .help = help,
+        .hint = NULL,
+        .func = func,
+    };
+    const esp_err_t err = esp_console_cmd_register(&cmd);
+    if (err != ESP_OK) {
+        printf("passport_cli: cannot register \"%s\": %s\n", command, esp_err_to_name(err));
+    }
+}
+
+void passport_cli_set_key_sink(passport_cli_key_sink_t sink)
+{
+    s_key_sink = sink;
+}
+
+esp_err_t passport_cli_start(void)
+{
+    if (s_started) {
+        return ESP_OK;
+    }
+
+    const esp_console_repl_config_t repl_config = {
+        .max_history_len = 32,
+        .history_save_path = NULL,
+        .task_stack_size = 4096,
+        .task_priority = 2,
+        .task_core_id = tskNO_AFFINITY,
+        .prompt = "passport> ",
+        .max_cmdline_length = 0,
+    };
+    const esp_console_dev_usb_serial_jtag_config_t dev_config =
+        ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
+
+    esp_console_repl_t *repl = NULL;
+    esp_err_t err = esp_console_new_repl_usb_serial_jtag(&dev_config, &repl_config, &repl);
+    if (err != ESP_OK) {
+        printf("passport_cli: REPL unavailable: %s\n", esp_err_to_name(err));
+        return err;
+    }
+
+    register_command("ver", "Print the application and ESP-IDF build identity", &cmd_ver);
+    register_command("app", "Print uptime, battery, keypad voltage, and memory", &cmd_app);
+    register_command("mem", "Print heap, largest free block, and the LVGL pool", &cmd_mem);
+    register_command("ui", "Screen inspection: tree | names | get | tap | key | screen", &cmd_ui);
+    register_command("reboot", "Restart the device", &cmd_reboot);
+    esp_console_register_help_command();
+
+    err = esp_console_start_repl(repl);
+    if (err != ESP_OK) {
+        printf("passport_cli: cannot start REPL: %s\n", esp_err_to_name(err));
+        return err;
+    }
+    s_started = true;
+    printf("passport_cli: console ready. Type \"help\".\n");
+    return ESP_OK;
+}

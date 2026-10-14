@@ -13,6 +13,7 @@
 #include "demo.h"
 #include "demo_navigation.h"
 #include "key_guard.h"
+#include "passport_cli.h"
 #include "ui_pixel.h"
 #include "lvgl.h"
 #include "esp_log.h"
@@ -60,6 +61,27 @@ static QueueHandle_t s_input_queue;
 static TaskHandle_t s_input_task;
 static volatile bool s_input_ready;
 
+// Widget names are derived from the text the user actually reads on screen, so
+// the serial console addresses exactly what is drawn rather than a parallel
+// list that can drift. "Low Power" becomes "low-power", "Wi-Fi" becomes "wi-fi".
+static void slugify(const char *in, char *out, size_t out_size) {
+    size_t j = 0;
+    for (size_t i = 0; in[i] != '\0' && j + 1 < out_size; i++) {
+        const char c = in[i];
+        if (c >= 'A' && c <= 'Z') {
+            out[j++] = (char)(c - 'A' + 'a');
+        } else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+            out[j++] = c;
+        } else if (j > 0 && out[j - 1] != '-') {
+            out[j++] = '-';
+        }
+    }
+    while (j > 0 && out[j - 1] == '-') {
+        j--;
+    }
+    out[j] = '\0';
+}
+
 static void menu_refresh(void) {
     for (size_t i = 0; i < DEMO_COUNT; i++) {
         lv_label_set_text_fmt(s_rows[i], "%s%s",
@@ -73,11 +95,15 @@ static void menu_refresh(void) {
 
 static void menu_build(void) {
     s_menu_scr = ui_pixel_screen_create("FoloToy");
+    lv_obj_set_name(s_menu_scr, "menu");
 
     for (size_t i = 0; i < DEMO_COUNT; i++) {
         int x = 11 + (int)(i % 2) * 112;
         int y = 52 + (int)(i / 2) * 47;
         s_cards[i] = ui_pixel_panel_create(s_menu_scr, x, y, 102, 40, UI_PAPER);
+        char card_name[24];
+        slugify(DEMOS[i].name, card_name, sizeof(card_name));
+        lv_obj_set_name(s_cards[i], card_name);
         s_rows[i] = lv_label_create(s_cards[i]);
         lv_obj_set_style_text_font(s_rows[i], &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_align(s_rows[i], LV_TEXT_ALIGN_CENTER, 0);
@@ -214,6 +240,14 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
     (void)xQueueSend(s_input_queue, &input, 0);
 }
 
+// Injected events from the serial console enter the same queue as a physical
+// press, so `ui key` navigates exactly like a finger does.
+static void passport_cli_inject(bsp_btn_t btn, bsp_btn_ev_t ev) {
+    if (!s_input_ready || !s_input_queue) return;
+    const input_event_t input = { .btn = btn, .event = ev };
+    (void)xQueueSend(s_input_queue, &input, 0);
+}
+
 void app_main(void) {
     ESP_LOGI(TAG, "FoloToy AI Passport BSP demo 启动");
     const uint32_t wake_causes = esp_sleep_get_wakeup_causes();
@@ -272,6 +306,13 @@ void app_main(void) {
         enter_menu();
         bsp_lvgl_unlock();
         s_input_ready = true;
+    }
+
+    // The serial console is a development and inspection surface. If it cannot
+    // start, the device keeps working; it is not a required subsystem.
+    passport_cli_set_key_sink(passport_cli_inject);
+    if (passport_cli_start() != ESP_OK) {
+        ESP_LOGW(TAG, "串口控制台不可用;设备其余功能不受影响");
     }
 
     ESP_LOGI(TAG, "就绪:Display=%d Button=%d Audio=%d Battery=%d",
