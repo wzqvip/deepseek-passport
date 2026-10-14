@@ -19,6 +19,63 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 16: a QR encoder, verified against an independent implementation
+
+**Milestone:** the encoder exists and its symbols are proven correct module by module. It is
+**not yet drawn on the panel** — that is the next step, and this entry does not claim it.
+
+### What was built
+
+`passport_qr` encodes byte-mode, level-L symbols in versions 1 to 4, which is everything this
+device needs: the longest payload is a Wi-Fi join string, and version 4 holds 78 bytes.
+`tools/make_qr_fixture.py` generates the test fixtures from the Python `qrcode` package, and
+`tests/test_passport_qr.c` compares matrices module by module, reporting the first differing
+coordinate when they disagree.
+
+Verified: four payloads at eight masks each — **32 exact matrix comparisons**. Between them
+they cover the mode and length fields, the pad codewords, the Reed-Solomon arithmetic, the
+finder, separator, timing and alignment patterns, the zigzag placement, the masking, and the
+format information.
+
+### Two of my own mistakes, found on the way
+
+**The fixtures were wrong before the encoder was.** `qrcode` picks the most compact encoding,
+and "HELLO" is more compact in alphanumeric mode than in byte mode — so the reference symbols
+carried *different codewords*, and the matrices disagreed for a reason that had nothing to do
+with this code. Forcing byte mode on the references fixed it. That is recorded in the
+generator, because a fixture that is not like-for-like sends the search into the wrong file.
+
+**The test found a real null-pointer dereference.** `passport_qr_encode(text, NULL)` wrote
+through the null pointer at the end, because the guard lived only in the internal builder.
+The check now happens where the write happens.
+
+### One property that is not verified, and why
+
+The **mask the penalty rules select is not verified against an oracle.** The plan was to
+compare against `segno`, which implements the specification's penalty. It cannot be used:
+extracting the codewords from segno's own matrix in the standard order gives an extra zero
+byte before the pad codewords —
+
+```text
+segno, extracted   : 40 54 84 54 C4 C4 F0 00 EC 11 ...
+specification      : 40 54 84 54 C4 C4 F0 EC 11 EC 11 ...
+```
+
+— so segno encodes a different symbol and scores a different matrix. `qrcode`'s automatic
+choice is not an oracle either: it scores masks with a neighbour-count heuristic rather than
+the specification's rules.
+
+So the symbol is verified correct **for every mask**, which means any selection still yields a
+valid scannable code; the selection itself follows the specification's penalty as implemented
+here, is self-consistent, and is recorded in the fixtures next to segno's choice for whoever
+picks this up. The mask affects how easily a reader locks on, not what the code says.
+
+A side effect worth noting: reading the reference matrix in the standard order and recovering
+the expected codewords also confirmed this encoder's traversal order — that was never a
+separate test, and it passed by construction.
+
+---
+
 ## 2026-10-14 — Session 15: the setup screen, and the device comes up online by itself
 
 **Milestone:** the hotspot credentials are visible on the device, which is the whole point

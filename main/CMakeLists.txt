@@ -13,6 +13,7 @@ idf_component_register(
          "passport_fonts.c"
          "passport_portal.c"
          "passport_provision.c"
+         "passport_qr.c"
          "passport_utf8.c"
          "passport_wifi.c"
          "passport_metrics_math.c"
