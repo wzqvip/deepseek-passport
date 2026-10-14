@@ -19,6 +19,69 @@ Rules for this log:
 
 ---
 
+## 2026-10-15 — Session 35: the hotspot was being knocked down by the station, and provisioning now works over the LAN
+
+**The owner's report:** still cannot connect. And a request worth acting on: *write the firmware you need and
+give yourself a way to test networking, rather than depending on me.*
+
+### A second real cause, found by looking for one
+
+`passport_wifi_init()` forced `WIFI_MODE_STA` on every call. `passport_provision_start()` calls it, so the
+hotspot survived that particular ordering — but **any station reconnect calls it too, and switching to
+station-only stops a running access point.** The device auto-reconnects when its station drops, so the
+sequence "open the setup screen, phone starts associating, router hiccups, station reconnects" took the
+hotspot off the air in the middle of the phone's handshake. The phone reports that as a wrong password,
+because it has nothing better to say.
+
+The Wi-Fi layer now asks the driver for the current mode and keeps `WIFI_MODE_APSTA` when an access point
+is running, instead of forcing station-only. Verified by doing exactly that:
+
+```text
+wifi disconnect   -> access point : up, mode : station + access point
+wifi connect      -> access point : up, mode : station + access point, agreement : the radio matches the screen
+prov events       -> nothing after the initial setup: no access point stop
+```
+
+### The diagnostics the owner asked for
+
+- **`prov status`** now prints the driver's mode and reads the access point's configuration **back from the
+  driver**, reporting whether the radio agrees with what the screen shows. "The password is wrong" is a
+  claim about the radio, so the answer has to come from the radio.
+- **`prov events`** — the last eight access-point events with uptimes, and **every client departure carries
+  the Wi-Fi reason code, spelled out**: "4-way handshake timed out: the password did not match" is a
+  different problem from "the client left on its own: often no internet on this network", and from "no
+  attempt at all". Kept in a ring so an attempt made while nobody was watching can be read afterwards.
+- **`prov clients`** — who is associated right now, with signal.
+- **`prov selftest`** — and a correction. The first version scanned for its own hotspot and announced "NOT
+  on the air" when it did not appear. **A radio cannot receive its own transmission**, so a self-scan can
+  never see the access point it is hosting: that conclusion was invalid, and the command now says what it
+  can and cannot prove. What does prove the interface is up is the driver's own `WIFI_EVENT_AP_START`,
+  which the event log now records — a handler registered after `esp_wifi_set_config()` had been missing it.
+
+### Provisioning over the LAN, which needed no new firmware at all
+
+The evidence that mattered most came from asking the device a different question: the web console answers
+on the **station** interface, not only on the hotspot. From this host, on the same network as the device:
+
+```text
+http://192.168.3.75/            HTTP 200, 3380 bytes   the full setup page
+http://192.168.3.75/api/status  HTTP 200  {"wifi":"connected","rssi":-43,...,"largest_block":10752}
+```
+
+So the device can be configured from any phone or computer already on the network, without the hotspot, the
+QR code or a typed password. That is now the documented first answer to "I cannot connect to it".
+
+### What this session could not do, stated plainly
+
+**Be the Wi-Fi client.** This machine has exactly one wireless radio, its radio state is `Software Off`, and
+enabling it needs an administrator privilege this session does not have — the attempt was refused. So the
+last mile, an actual phone associating, still needs a person. What is verified from the device side is that
+the interface is raised (the driver's own event), that the mode is station-plus-access-point, that the
+address is 192.168.4.1 on channel 6, that the authentication is WPA2-PSK, and that the radio's configuration
+matches the screen character for character.
+
+---
+
 ## 2026-10-15 — Session 34: "the password is wrong" was a crash, not a password
 
 **The report from the owner:** the phone said the Wi-Fi password was wrong and would not connect.

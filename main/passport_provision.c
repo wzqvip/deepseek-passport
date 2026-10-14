@@ -369,10 +369,126 @@ static void derive_identity(void)
     }
 }
 
+// --- access point events ----------------------------------------------------
+//
+// A small ring of what the radio has seen, so that a client's failed attempt can be read afterwards
+// instead of having to be watched live. Each entry carries the Wi-Fi reason code, which is the only
+// thing that separates "wrong key" from "handshake timed out" from "associated and left again".
+#define EVENT_RING 8
+#define EVENT_TEXT 128
+
+static char s_events[EVENT_RING][EVENT_TEXT];
+static unsigned s_event_count;
+
+static void record_event(const char *fmt, ...)
+{
+    // Newest first: shift down and write at the top, each entry stamped with the uptime so the order
+    // is unambiguous rather than inferred from the print order.
+    for (int i = EVENT_RING - 1; i > 0; i--) {
+        memcpy(s_events[i], s_events[i - 1], EVENT_TEXT);
+    }
+    // The body is sized to leave room for the longest possible timestamp prefix, so the prefixed
+    // result provably fits and the compiler can see that it does.
+    char body[EVENT_TEXT - 32];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(body, sizeof(body), fmt, args);
+    va_end(args);
+    snprintf(s_events[0], EVENT_TEXT, "[%5lld ms] %s", (long long)(esp_timer_get_time() / 1000), body);
+    if (s_event_count < EVENT_RING) {
+        s_event_count++;
+    }
+}
+
+void passport_provision_events(char *out, size_t out_size)
+{
+    if (out == NULL || out_size == 0u) {
+        return;
+    }
+    out[0] = '\0';
+    if (s_event_count == 0u) {
+        snprintf(out, out_size, "no access point events yet\n");
+        return;
+    }
+    size_t used = 0u;
+    const int header = snprintf(out, out_size, "access point events, newest first:\n");
+    if (header < 0 || (size_t)header >= out_size) {
+        return;
+    }
+    used = (size_t)header;
+    for (unsigned i = 0u; i < s_event_count; i++) {
+        const int written = snprintf(out + used, out_size - used, "  %s\n", s_events[i]);
+        if (written < 0 || (size_t)written >= out_size - used) {
+            break;
+        }
+        used += (size_t)written;
+    }
+}
+
+static void ap_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)arg;
+    (void)base;
+    switch (id) {
+    case WIFI_EVENT_AP_START:
+        record_event("ap started");
+        break;
+    case WIFI_EVENT_AP_STOP:
+        record_event("ap stopped");
+        break;
+    case WIFI_EVENT_AP_STACONNECTED: {
+        const wifi_event_ap_staconnected_t *e = (const wifi_event_ap_staconnected_t *)data;
+        record_event("client %02x:%02x:%02x:%02x:%02x:%02x joined (aid %u)",
+                     e->mac[0], e->mac[1], e->mac[2], e->mac[3], e->mac[4], e->mac[5],
+                     (unsigned)e->aid);
+        break;
+    }
+    case WIFI_EVENT_AP_STADISCONNECTED: {
+        // The reason code, spelled out for the ones that matter in practice. This is what turns "it
+        // will not connect" into something actionable.
+        const wifi_event_ap_stadisconnected_t *e = (const wifi_event_ap_stadisconnected_t *)data;
+        const char *why = "see the Wi-Fi reason code table";
+        switch (e->reason) {
+        case WIFI_REASON_AUTH_EXPIRE: why = "authentication expired: the key was probably wrong, or the attempt took too long"; break;
+        case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT: why = "4-way handshake timed out: the password did not match"; break;
+        case WIFI_REASON_HANDSHAKE_TIMEOUT: why = "handshake timed out"; break;
+        case WIFI_REASON_ASSOC_EXPIRE: why = "association expired: the client gave up waiting"; break;
+        case WIFI_REASON_ASSOC_LEAVE: why = "the client left on its own: often no internet on this network"; break;
+        case WIFI_REASON_DISASSOC_PWRCAP_BAD: why = "the client's power capability was rejected"; break;
+        case WIFI_REASON_NO_AP_FOUND: why = "the client could not find the network"; break;
+        case WIFI_REASON_CONNECTION_FAIL: why = "the client reported a connection failure"; break;
+        default: break;
+        }
+        record_event("client %02x:%02x:%02x:%02x:%02x:%02x left (reason %u: %s)",
+                     e->mac[0], e->mac[1], e->mac[2], e->mac[3], e->mac[4], e->mac[5],
+                     (unsigned)e->reason, why);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 esp_err_t passport_provision_start(void)
 {
     if (s_active) {
         return ESP_OK;
+    }
+
+    // Watch the access point's own events, before anything raises it: WIFI_EVENT_AP_START is emitted
+    // as soon as the interface is beaconing, and a handler registered after esp_wifi_set_config()
+    // misses it — which is exactly what happened the first time, leaving the event log empty and the
+    // question "is the hotspot really on the air?" unanswered.
+    static bool watching;
+    if (!watching) {
+        if (esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_AP_START, &ap_event_handler, NULL) == ESP_OK &&
+            esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_AP_STOP, &ap_event_handler, NULL) == ESP_OK &&
+            esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_AP_STACONNECTED, &ap_event_handler, NULL) == ESP_OK &&
+            esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_AP_STADISCONNECTED, &ap_event_handler, NULL) == ESP_OK) {
+            watching = true;
+        } else {
+            ESP_LOGW(TAG, "热点事件监听注册失败;连接诊断将没有记录");
+        }
     }
 
     esp_err_t err = passport_wifi_init();   // also brings up netif and the event loop
@@ -481,9 +597,12 @@ esp_err_t passport_provision_start(void)
 
     s_active = true;
     ESP_LOGI(TAG, "热点已启动: ssid=%s password=%s 地址=%s", s_ssid, s_password, s_address);
+    // Recorded from this side rather than inferred: the interface exists, it has an address, and the
+    // events above say whether the driver raised it.
+    record_event("ap configured: ssid %s, address %s, channel %u", s_ssid, s_address,
+                 (unsigned)channel);
     return ESP_OK;
 }
-
 esp_err_t passport_provision_stop(void)
 {
     if (s_server != NULL) {

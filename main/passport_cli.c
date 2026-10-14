@@ -1363,11 +1363,15 @@ static int cmd_work(int argc, char **argv)
 static int cmd_prov(int argc, char **argv)
 {
     if (argc < 2) {
-        printf("usage: prov <status|start|stop|page [route]|qr|form <k=v&k=v>>\n");
-        printf("  status        whether the setup access point is up, and its name\n");
+        printf("usage: prov <status|start|stop|page [route]|qr|pixels|events|clients|selftest|form <k=v&k=v>>\n");
+        printf("  status        whether the setup access point is up, and what the radio is configured with\n");
         printf("  start / stop  raise or drop the access point and its web console\n");
         printf("  page [route]  print what a request would return: root, status, or config\n");
         printf("  qr            print the module matrix of the code shown on the panel\n");
+        printf("  pixels        sample the drawn pixels and compare them with the encoder's matrix\n");
+        printf("  events        what the radio has seen: joins and leaves with the reason codes\n");
+        printf("  clients       the stations associated right now, with their signal\n");
+        printf("  selftest      scan for our own hotspot to prove it is on the air\n");
         printf("  form <k=v..>  apply a submission exactly as a POST to /save would\n");
         return 1;
     }
@@ -1386,6 +1390,17 @@ static int cmd_prov(int argc, char **argv)
         // screen is lying and nothing a person types will work.
         wifi_config_t live;
         memset(&live, 0, sizeof(live));
+        wifi_mode_t mode = WIFI_MODE_NULL;
+        if (esp_wifi_get_mode(&mode) == ESP_OK) {
+            const char *name = "null";
+            switch (mode) {
+            case WIFI_MODE_STA: name = "station only"; break;
+            case WIFI_MODE_AP: name = "access point only"; break;
+            case WIFI_MODE_APSTA: name = "station + access point"; break;
+            default: break;
+            }
+            printf("mode         : %s\n", name);
+        }
         if (esp_wifi_get_config(WIFI_IF_AP, &live) == ESP_OK) {
             char live_ssid[33];
             const size_t n = (live.ap.ssid_len != 0u) ? live.ap.ssid_len : strlen((char *)live.ap.ssid);
@@ -1571,6 +1586,71 @@ static int cmd_prov(int argc, char **argv)
         }
         printf("prov pixels: MATCH - the drawn pixels are the encoded symbol\n");
         return 0;
+    }
+
+    if (strcmp(sub, "events") == 0) {
+        // What the radio has seen, newest first, with the reason code for every departure. An attempt
+        // made before this command was run is still here, which is the point: the owner tries, and the
+        // reason is read afterwards.
+        static char log[8 * 96];
+        passport_provision_events(log, sizeof(log));
+        printf("%s", log);
+        return 0;
+    }
+
+    if (strcmp(sub, "clients") == 0) {
+        wifi_sta_list_t stations;
+        memset(&stations, 0, sizeof(stations));
+        const esp_err_t err = esp_wifi_ap_get_sta_list(&stations);
+        if (err != ESP_OK) {
+            printf("prov clients: %s (is the access point up?)\n", esp_err_to_name(err));
+            return 1;
+        }
+        printf("prov clients: %u associated\n", (unsigned)stations.num);
+        for (int i = 0; i < stations.num; i++) {
+            const wifi_sta_info_t *sta = &stations.sta[i];
+            printf("  %02x:%02x:%02x:%02x:%02x:%02x  rssi %d dBm\n",
+                   sta->mac[0], sta->mac[1], sta->mac[2], sta->mac[3], sta->mac[4], sta->mac[5],
+                   sta->rssi);
+        }
+        return 0;
+    }
+
+    if (strcmp(sub, "selftest") == 0) {
+        // What this can and cannot answer, stated rather than implied.
+        //
+        // A scan answered by this same radio is NOT proof that the hotspot is on the air: a radio
+        // cannot receive its own transmission, so a device hosting an access point will not find
+        // itself in its own scan results. The first version of this command treated "not in the scan"
+        // as "not on the air" and drew exactly that wrong conclusion. What this does verify is that
+        // the configuration is set and that the interface is up; whether a phone can see and join it
+        // needs a second radio, which is what the event log is for.
+        if (!passport_provision_active()) {
+            printf("prov selftest: the access point is down; run \"prov start\" first\n");
+            return 1;
+        }
+        printf("prov selftest: this radio cannot hear its own beacon, so a scan cannot confirm it.\n");
+        static passport_wifi_ap_t aps[24];
+        const int found = passport_wifi_scan(aps, 24, 15000u);
+        if (found < 0) {
+            printf("  scan failed (the driver may refuse a scan while hosting)\n");
+        } else {
+            printf("  scan ran and saw %d other networks; ours is absent from it, as expected\n", found);
+        }
+        const char *mine = passport_provision_ssid();
+        bool on_air = false;
+        for (int i = 0; found > 0 && i < found; i++) {
+            if (strcmp(aps[i].ssid, mine) == 0) {
+                on_air = true;   // some drivers do report the hosted interface; say so if it happens
+            }
+        }
+        printf("  the driver reports the interface %s, address %s\n",
+               on_air ? "AND it appears in the scan" : "up (see \"prov events\" for AP_START)",
+               passport_provision_address());
+        printf("  ask a phone to join %s and then run \"prov events\": a failed attempt leaves the\n",
+               mine);
+        printf("  Wi-Fi reason code there, and no attempt at all means the beacon never arrived\n");
+        return on_air ? 0 : 1;
     }
 
     if (strcmp(sub, "form") == 0) {

@@ -161,7 +161,22 @@ esp_err_t passport_wifi_init(void)
         return err;
     }
 
-    err = esp_wifi_set_mode(WIFI_MODE_STA);
+    // Do not knock down a running access point on the way to bringing the station up.
+    //
+    // This used to force WIFI_MODE_STA unconditionally, which stops any access point that is running.
+    // The provisioning hotspot is raised with WIFI_MODE_APSTA, so the sequence "open the setup screen,
+    // then something reconnects the station" — a router hiccup, the bounded auto-reconnect, or simply
+    // this function being called again — switched the mode to station-only, the hotspot's beacon
+    // stopped, and a phone that was halfway through associating failed. Which is what the owner saw:
+    // "it will not connect", reported by the phone as a wrong password.
+    wifi_mode_t current = WIFI_MODE_NULL;
+    if (esp_wifi_get_mode(&current) == ESP_OK &&
+        (current == WIFI_MODE_AP || current == WIFI_MODE_APSTA)) {
+        ESP_LOGI(TAG, "热点在运行,保持 APSTA 而不是切成纯 station");
+        err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    } else {
+        err = esp_wifi_set_mode(WIFI_MODE_STA);
+    }
     if (err == ESP_OK) {
         err = esp_wifi_start();
     }

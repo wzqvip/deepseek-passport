@@ -41,7 +41,7 @@ lv_obj_set_name(s_card, "audio");   /* the card labelled "Audio" */
 | `power status` \| `power screen <on\|off>` \| `power sleep [seconds]` | 待机：屏幕是否点亮、已静置多久；手动点亮或熄屏；进入深睡并由按键唤醒。带 `seconds` 参数时会额外配置定时唤醒，那是**测试保险**而不是出货路径 |
 | `notify test [question\|done\|failed]` \| `notify status` | 播放一次通知提示音；或报告缓冲是否就绪、上次播放的是什么。播放期间麦克风关闭 |
 | `work feed <json>` \| `work key <up\|down\|ok>` \| `work show` \| `work screen` \| `work poll` \| `work answer` \| `work client` | 工作模式：按桥接服务将来的方式把状态文档交给设备、对着它按一次键、打印它正在显示的内容、把工作屏切到最前、立刻从桥接服务取一次、发送所选选项、或报告桥接客户端一直在做什么。从控制台喂入的文档**必须是 ASCII**：控制台会弄坏非 ASCII 输入 |
-| `prov status\|start\|stop\|page [route]\|qr\|pixels\|form <k=v>` | 配网热点与它的 Web 控制台：开启或关闭；打印一次请求会返回的确切内容；打印面板上那个二维码的模块矩阵；对**真正被绘制出来**的像素取样并与编码器的矩阵比较（这能抓出符号被反色——那是矩阵比对抓不到的）；或按 POST 到 `/save` 的方式应用一次提交。`status` 还会把配置**从 Wi-Fi 驱动里读回来**并报告电台与屏幕是否一致——手机连不上时该问的就是这个 |
+| `prov status\|start\|stop\|events\|clients\|selftest\|page [route]\|qr\|pixels\|form <k=v>` | 配网热点与它的 Web 控制台：开启或关闭；打印一次请求会返回的确切内容；打印面板上那个二维码的模块矩阵；对**真正被绘制出来**的像素取样并与编码器的矩阵比较（这能抓出符号被反色——那是矩阵比对抓不到的）；或按 POST 到 `/save` 的方式应用一次提交。`status` 会打印驱动模式并把配置**从 Wi-Fi 驱动里读回来**，报告电台与屏幕是否一致；`events` 列出最近八条接入点事件（带运行时刻），并**写明每一次客户端离开的 Wi-Fi 原因码**；`clients` 列出此刻谁关联着；`selftest` 说明自扫描能证明什么、不能证明什么——**电台收不到自己发的信标** |
 | `font probe` \| `font check` \| `font shot [path]` | 分别针对固定中文样本、**屏幕上真实显示的文本**给出字形覆盖；或把某个对象的像素渲染成 ASCII 图（默认 `chat`），好在没有摄像头的情况下检查渲染。非活动屏幕可按名字寻址；整屏太大无法快照，请针对子对象 |
 | `llm probe` \| `llm ask <text>` | 向已配置端点 POST：`probe` 发一个最小补全（401 即证明传输通了）；`ask` 发一个问题并打印回答 |
 | `wifi status\|scan\|connect [ms]\|disconnect` | station 状态与地址；列出周边接入点（不需要任何凭据）；用已存凭据关联；断开关联 |

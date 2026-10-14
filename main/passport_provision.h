@@ -36,6 +36,14 @@ const char *passport_provision_ssid(void);
 const char *passport_provision_password(void);
 const char *passport_provision_address(void);
 
+// The last few access-point events, newest first: each join and leave with the Wi-Fi reason code.
+//
+// The reason code is the whole point. "The phone will not connect" has several causes that look
+// identical from the outside — a wrong key, a handshake that times out, a client that associates and
+// then leaves because the network has no internet — and the code distinguishes them. Kept in a small
+// ring so an attempt made while nobody was watching can still be read afterwards.
+void passport_provision_events(char *out, size_t out_size);
+
 // Render exactly what a request would return, for verification over the console. Returns
 // the number of bytes written, or a negative value for a bad route or a small buffer.
 int passport_provision_render(passport_portal_route_t route, char *out, size_t out_size);

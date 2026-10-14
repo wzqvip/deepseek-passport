@@ -63,8 +63,17 @@ because the captive-portal probes are answered. The password is ten characters f
 `i`, `l`, `o`, `0` and `1` removed, because it is read off a small screen and typed by a person.
 
 If a phone will not connect, ask the device first: `prov status` reads the access point's configuration
-back **from the radio** and reports whether it agrees with what the screen shows. A disagreement there
-means nothing typed will ever work, and it is a different problem from a mistyped character.
+back **from the radio**, prints the driver's mode, and reports whether it agrees with what the screen
+shows. A disagreement there means nothing typed will ever work, and it is a different problem from a
+mistyped character. `prov events` then lists the last eight access-point events with uptimes, and every
+client departure carries the Wi-Fi reason code in words — "4-way handshake timed out: the password did
+not match" is a different problem from "the client left on its own: often no internet on this network",
+and from no attempt at all. `prov clients` shows who is associated right now.
+
+**The hotspot is not needed to configure the device.** The web console also answers on the station
+interface, so any phone or computer on the same network can open `http://<the device's address>/` and use
+every setting. This was verified from a host on the same LAN, and it is the first thing to try when the
+hotspot will not cooperate.
 
 The serial console at 115200 baud is the whole diagnostic surface: `help` lists the commands and the
 [serial console document](serial-cli.md) explains the two contracts they keep. `ui audit` is the one
@@ -163,7 +172,8 @@ one is still open.
 | [`progress-log.md`](progress-log.md) | Every session: what was built, what was measured, what was wrong |
 | [`main/`](../../../main) | The application, one module per concern |
 | [`components/bsp/`](../../../components/bsp) | The board support package, upstream and reused |
-| [`tools/`](../../../tools) | The gate, the fixture generator, the stand-in bridge, the QR checker |
+| [`tools/`](../../../tools) | The gate, the fixture generator, the stand-in bridge, the QR checker, and the console driver |
+| [`tools/passport-console.ps1`](../../../tools/passport-console.ps1) | Drives the device's serial console: waits for the prompt instead of sleeping, so a reading is repeatable rather than intermittent |
 
 The progress log is the honest record. It contains the mistakes as well as the results — three wrong
 diagnoses retracted, a reboot loop shipped and fixed, a protocol document corrected after it turned out
