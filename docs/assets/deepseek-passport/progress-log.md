@@ -19,6 +19,94 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 31: an acceptance walkthrough, which found a crash and three other defects
+
+**Milestone:** the interface was walked the way a person would walk it, and it does not survive that
+walk yet. Four defects, one of them a crash, all now fixed and verified.
+
+### 1. A stack protection fault on a long press of UP
+
+The gesture that opens the setup screen **rebooted the device**, every time:
+
+```text
+Guru Meditation Error: Core 0 panic'ed (Stack protection fault).
+Detected in task "passport_input"
+```
+
+It is my regression. In Session 27 I trimmed the button task's stack from 12,288 to 6,144 on the
+reasoning that it only queues events now that the QR encoder lives on the app worker. That reasoning
+was wrong: the long-press-of-UP branch still called `passport_app_show_setup()`, which builds the
+screen, which encodes the join code, which needs about six kilobytes. The trim removed the room and
+left the call.
+
+Everything heavy about that screen now happens on the worker — the button task sets a flag and the
+worker reserves the pixels, starts the access point and builds the screen. **The same mistake was made
+twice inside this one fix**: the first attempt moved `qr_reserve()` into the button branch, which put
+the encoder back on the same small stack and crashed identically. That is worth recording as a rule
+rather than an anecdote: *the button task's stack is a constraint on every call on that path, and it
+has to be checked when a call is added, not when it crashes.*
+
+### 2. The join code stopped rendering
+
+With the setup screen finally reachable, it showed the failure label instead of a code. The pixels are
+24,642 bytes and the access point, started first, takes tens of kilobytes and fragments what remains.
+
+Fixed by reserving the pixels at the moment the screen is requested and **before** the access point
+starts, then releasing them when the screen closes. That is the original reservation, restored with
+its reasoning intact — the code cannot be retried if the allocation fails, so it goes first — and with
+only its duration changed. Held for ever, those bytes left no room for a TLS session, which is how the
+cost was found in Session 27.
+
+```text
+passport_app: the join code's buffer is ready, 24642 bytes (111 pixels)
+passport_app: the join code was generated, version 3, 29 modules, scale 3, 111 pixels, 40-byte payload
+```
+
+### 3. Chinese text drawn with a font that has no Chinese glyphs
+
+Four labels — the home hint and three on the setup and work screens — were created with Montserrat, the
+Latin font, while carrying Chinese text. On the glass they are empty boxes. The repository's own guide
+warns about exactly this and says a successful build proves nothing; what was missing was a way to
+check it on the device.
+
+There is one now. `ui audit` walks every screen, and for every label whose text contains a non-ASCII
+character it asks the font that label is actually drawn with whether that character exists. It is a
+runtime check rather than a source review because the two facts live in different places.
+
+**It was run before the fix, and it failed** — which is the only reason to trust it:
+
+```text
+MISSING: passport/hint can not draw U+63D0, so the hint line has holes
+ui audit: 5 labels checked, 1 with characters their font cannot draw
+```
+
+After the fix: 0 findings across all three screens, 15 labels on the home and work screens and 11 on
+the setup screen.
+
+### 4. The on-screen hint described controls that no longer exist
+
+It still told the owner that OK asks a question and that holding it stands by — from before OK became
+push-to-talk and before sleep moved to a double press of UP. A hint that lies is worse than no hint,
+because it teaches the wrong gesture. It now names the four real gestures — hold OK to talk, hold DOWN
+for work mode, hold UP for setup, double-press UP for standby — in the font that can draw them.
+
+### Also observed, and correct
+
+An injected gesture was silently swallowed early in the walkthrough. The screen had gone to standby
+after the idle timeout, so the press was consumed as a wake-up and did nothing else — the arbitration
+from Session 25 doing its job. It cost me a confusing minute; it is recorded because it is the same
+confusion a person will have.
+
+### Not verified
+
+Whether a phone can read the code on the glass. With the portal up, the largest free block is 7,680
+bytes, so a snapshot of it cannot be allocated either. The matrix the device generates is printed by
+`prov qr`, so the symbol itself can be checked against an independent implementation of the same
+payload — no decoder is installed in this environment, and installing one is not this session's
+business. That is the next thing.
+
+---
+
 ## 2026-10-14 — Session 30: the silence threshold now measures the room, and two wrong defect reports retracted
 
 **Milestone:** the device measures its own room at start-up and sets its silence threshold from that

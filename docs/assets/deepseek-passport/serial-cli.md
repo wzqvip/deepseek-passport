@@ -43,6 +43,7 @@ Requires `CONFIG_LV_USE_OBJ_NAME=y` (set in `sdkconfig.defaults`).
 | `ui tap <name-or-path>` | Send a synthetic `LV_EVENT_CLICKED`; if the named object is a plain label, the nearest clickable ancestor receives it |
 | `ui key <up\|down\|ok> <press\|click\|double\|long\|release>` | Inject a button event |
 | `ui screen` | Active screen name, size, and child count |
+| `ui audit` | Walk every screen and report any label whose text contains a character the font it is actually drawn with cannot render. The repository's Chinese-font rule, checked on the running device instead of by reading the source. Screens are built on demand, so a full audit follows `work screen` and the setup gesture |
 | `reboot` | Restart the device |
 | `audio status\|tone [ms]\|loopback [ms]\|mute-check` | Which subsystem holds the audio path; play a 1 kHz tone; record and play it back with a level reading; prove that a capture is refused while playback holds the path |
 | `net probe <url>` | GET a URL over HTTPS; report the status, the bytes, and the heap measured while the TLS session was open |

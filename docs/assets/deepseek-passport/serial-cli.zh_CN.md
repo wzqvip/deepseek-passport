@@ -33,6 +33,7 @@ lv_obj_set_name(s_card, "audio");   /* the card labelled "Audio" */
 | `ui tap <name-or-path>` | 发送一个合成的 `LV_EVENT_CLICKED`；如果指定对象是纯标签，则由最近的可点击祖先接收 |
 | `ui key <up\|down\|ok> <press\|click\|double\|long\|release>` | 注入一次按键事件 |
 | `ui screen` | 活动屏幕名称、尺寸和子对象数量 |
+| `ui audit` | 遍历每个屏幕，报告任何**文本里含有"它实际使用的字体画不出来"的字符**的标签。这条仓库的中文字体规则，是在**运行中的设备上**检查，而不是靠读源码。屏幕是按需构建的，所以完整审查要在 `work screen` 与配网手势之后进行 |
 | `reboot` | 重启设备 |
 | `audio status\|tone [ms]\|loopback [ms]\|mute-check` | 当前哪个子系统占用音频通路；播放 1 kHz 单音；录一段再放回并给出电平读数；验证播放持有通路期间录音会被拒绝 |
 | `net probe <url>` | 对 URL 发 HTTPS GET；报告状态码、字节数，以及 TLS 会话活跃期间测得的堆内存 |

@@ -89,6 +89,8 @@ static lv_obj_t *s_setup_password;
 static lv_obj_t *s_setup_address;
 static bool s_on_setup;
 static bool s_on_work;
+// Set by the button task, acted on by the app worker: see the long-press-of-UP branch.
+static volatile bool s_setup_requested;
 
 // --- small LVGL helpers -----------------------------------------------------
 
@@ -174,8 +176,14 @@ static void build_home(void)
 
     plain(s_screen, 0, 232, 240, 3, APP_ACCENT);
 
-    s_hint = label(s_screen, 10, 244, &lv_font_montserrat_14, APP_MUTED, "hint");
-    lv_label_set_text(s_hint, "OK:提问    长按OK:待机");
+    // Every label that carries Chinese uses passport_font_body(). The default font has no CJK glyphs
+    // at all, and text set with it renders as empty boxes — a defect a build cannot see and a
+    // snapshot would only reveal if someone looked. `ui audit` now checks this on the device, and it
+    // is what found these: the hint line and two setup labels were drawn with the Latin font.
+    s_hint = label(s_screen, 6, 240, passport_font_body(), APP_MUTED, "hint");
+    lv_obj_set_width(s_hint, 228);
+    lv_label_set_long_mode(s_hint, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(s_hint, "按住OK说话   长按DOWN工作\n长按UP配网   双击UP待机");
 
     set_mood(PASSPORT_PET_IDLE, 0);
     lv_screen_load(s_screen);
@@ -284,6 +292,42 @@ static void qr_release(void)
     }
 }
 
+// Take the pixels for the join code *before* the access point starts.
+//
+// This is the reservation, back again, but only for the few milliseconds it is needed rather than for
+// the life of the device. Its original reasoning was right — the code cannot be retried if the
+// allocation fails, and the radio fragments what is left — and it was only the *duration* that cost
+// too much: held for ever, these tens of kilobytes left no room for a TLS session, which is how the
+// cost was found. Allocating it at the moment the setup screen is requested keeps both properties.
+static void qr_reserve(void)
+{
+    char payload[192];
+    qr_payload(payload, sizeof(payload));
+
+    passport_qr_t code;
+    if (!passport_qr_encode(payload, &code)) {
+        return;
+    }
+    const int modules = (int)code.size + 2 * QR_QUIET_ZONE;
+    int scale = QR_TARGET_SIDE / modules;
+    if (scale < 2) {
+        scale = 2;
+    }
+    const int side = modules * scale;
+    if (s_qr_pixels != NULL && s_qr_side == side) {
+        return;   // already the right size
+    }
+    qr_release();
+    s_qr_pixels = heap_caps_malloc((size_t)side * (size_t)side * sizeof(uint16_t),
+                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    s_qr_side = (s_qr_pixels != NULL) ? side : 0;
+    if (s_qr_pixels != NULL) {
+        ESP_LOGI(TAG, "二维码缓冲已就绪:%d 字节(%d 像素)", side * side * 2, side);
+    } else {
+        ESP_LOGE(TAG, "二维码缓冲分配失败(%d 字节)", side * side * 2);
+    }
+}
+
 static void setup_refresh(void)
 {
     if (s_setup_hotspot == NULL) {
@@ -305,7 +349,7 @@ static void build_setup(void)
 
     lv_obj_t *title = label(s_setup, 10, 6, passport_font_body(), APP_PAPER, "setup_title");
     lv_label_set_text(title, "配网设置");
-    lv_label_set_text(label(s_setup, 10, 26, &lv_font_montserrat_14, APP_MUTED, "setup_step"),
+    lv_label_set_text(label(s_setup, 10, 26, passport_font_body(), APP_MUTED, "setup_step"),
                       "手机扫码,或连接下面的热点");
     plain(s_setup, 0, 44, 240, 2, APP_ACCENT);
 
@@ -333,7 +377,7 @@ static void build_setup(void)
     s_setup_address = label(s_setup, 10, y + 44, passport_font_body(), APP_MUTED, "address");
 
     plain(s_setup, 0, 232, 240, 3, APP_ACCENT);
-    lv_label_set_text(label(s_setup, 10, 244, &lv_font_montserrat_14, APP_MUTED, "setup_back"),
+    lv_label_set_text(label(s_setup, 10, 244, passport_font_body(), APP_MUTED, "setup_back"),
                       "OK: 返回");
 
     setup_refresh();
@@ -432,8 +476,8 @@ static void build_work(void)
     }
 
     plain(s_work, 0, 268, 240, 2, APP_ACCENT);
-    lv_label_set_text(label(s_work, 10, 276, &lv_font_montserrat_14, APP_MUTED, "work_hint"),
-                      "UP/DOWN 选择   OK 确认   长按OK 返回");
+    lv_label_set_text(label(s_work, 6, 272, passport_font_body(), APP_MUTED, "work_hint"),
+                      "UP/DOWN 选择  OK 确认  长按OK 返回");
 }
 
 // Draw the current view. Called with the LVGL lock held.
@@ -576,6 +620,23 @@ static void app_task(void *arg)
         // turning the screen off needs no task of its own.
         for (int waited = 0; s_running && waited < BATTERY_POLL_MS; waited += 100) {
             passport_power_tick();
+            // Requests from the button task that are too heavy for it: building the setup screen
+            // means encoding the join code. See the long-press-of-UP branch in passport_app_key().
+            if (s_setup_requested) {
+                s_setup_requested = false;
+                // Everything heavy about showing the setup screen happens here, on the one task big
+                // enough for it: encoding the join code needs about six kilobytes, and starting the
+                // access point is not small either. The button task asks; this task works.
+                //
+                // The pixels are taken before the access point starts, because the radio costs tens
+                // of kilobytes and fragments what is left. Order, not luck: the allocation that
+                // cannot be retried goes before the one that can.
+                qr_reserve();
+                if (!passport_provision_active()) {
+                    passport_provision_start();
+                }
+                passport_app_show_setup();
+            }
             vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
@@ -699,11 +760,14 @@ void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
 
     if (btn == BSP_BTN_UP && ev == BSP_BTN_LONG) {
         // Reach the setup screen by hand, for a device whose network changed under it.
+        //
+        // Only the request is made here. Building that screen encodes the join code, which needs
+        // about six kilobytes of stack, and the button task has less than that — asking it to build
+        // the screen crashed the device with a stack protection fault, every time, on a long press
+        // of UP. The worker owns the encoder for exactly this reason, so the request is handed to it
+        // and the screen appears within a poll interval.
         bsp_lvgl_unlock();
-        if (!passport_provision_active()) {
-            passport_provision_start();
-        }
-        passport_app_show_setup();
+        s_setup_requested = true;
         return;
     }
 

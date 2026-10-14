@@ -1062,6 +1062,75 @@ static int cmd_voice(int argc, char **argv)
     return 1;
 }
 
+// --- the font audit ---------------------------------------------------------
+//
+// The repository's rule is that Chinese interface text must be checked for glyph coverage, not
+// assumed from a successful build. This walks the interface and applies that rule to the running
+// device: for every label whose text contains a non-ASCII character, ask the font that label is
+// actually drawn with whether it can render that character.
+//
+// It is worth being a runtime check rather than a source review because the two facts live in
+// different places — the text is set somewhere, the font is chosen somewhere else, and the default
+// font has no CJK glyphs at all. A label given Chinese text and the default font renders as empty
+// boxes, which a build cannot see.
+static void audit_object(lv_obj_t *obj, const char *screen, int *checked, int *missing)
+{
+    if (lv_obj_check_type(obj, &lv_label_class)) {
+        const char *text = lv_label_get_text(obj);
+        (*checked)++;
+        size_t index = 0u;
+        uint32_t codepoint = 0u;
+        while (passport_utf8_next(text, &index, &codepoint) != 0u) {
+            if (codepoint < 0x80u) {
+                continue;
+            }
+            const lv_font_t *font = lv_obj_get_style_text_font(obj, LV_PART_MAIN);
+            lv_font_glyph_dsc_t dsc;
+            if (font != NULL && !lv_font_get_glyph_dsc(font, &dsc, codepoint, 0)) {
+                char name[CLI_NAME_MAX];
+                safe_name(obj, 0, name, sizeof(name));
+                printf("  MISSING: %s/%s can not draw U+%04X, so \"%s\" has holes\n", screen, name,
+                       (unsigned)codepoint, text);
+                (*missing)++;
+                break;   // one finding per label is enough
+            }
+        }
+    }
+    const uint32_t children = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0u; i < children; i++) {
+        audit_object(lv_obj_get_child(obj, (int32_t)i), screen, checked, missing);
+    }
+}
+
+static int cmd_ui_audit(void)
+{
+    if (!bsp_lvgl_lock(1500)) {
+        printf("ui audit: LVGL lock timeout\n");
+        return 1;
+    }
+    lv_display_t *display = lv_display_get_default();
+    if (display == NULL) {
+        printf("ui audit: no display\n");
+        bsp_lvgl_unlock();
+        return 1;
+    }
+    static const char *const SCREENS[] = { "passport", "setup", "work" };
+    int checked = 0;
+    int missing = 0;
+    for (size_t i = 0u; i < sizeof(SCREENS) / sizeof(SCREENS[0]); i++) {
+        lv_obj_t *screen = lv_display_get_screen_by_name(display, SCREENS[i]);
+        if (screen == NULL) {
+            printf("ui audit: no screen named \"%s\"\n", SCREENS[i]);
+            continue;
+        }
+        audit_object(screen, SCREENS[i], &checked, &missing);
+    }
+    printf("ui audit: %d labels checked, %d with characters their font cannot draw\n", checked,
+           missing);
+    bsp_lvgl_unlock();
+    return (missing == 0) ? 0 : 1;
+}
+
 static int cmd_power(int argc, char **argv)
 {
     if (argc < 2) {
@@ -1549,16 +1618,18 @@ static int cmd_config(int argc, char **argv)
 static int cmd_ui(int argc, char **argv)
 {
     if (argc < 2) {
-        printf("usage: ui <tree|names|get|tap|key|screen> [args]\n");
+        printf("usage: ui <tree|names|get|tap|key|screen|audit> [args]\n");
         printf("  tree [depth]            dump the live object tree\n");
         printf("  names                   list every object as a name path\n");
         printf("  get <name-or-path>      print one object\n");
         printf("  tap <name-or-path>      send a synthetic click\n");
         printf("  key <up|down|ok> <ev>   inject a button event\n");
         printf("  screen                  active screen summary\n");
+        printf("  audit                   check every label against the font it is drawn with\n");
         return 1;
     }
     const char *sub = argv[1];
+    if (strcmp(sub, "audit") == 0)  { return cmd_ui_audit(); }
     if (strcmp(sub, "tree") == 0)   { return cmd_ui_tree(argc - 1, argv + 1); }
     if (strcmp(sub, "names") == 0)  { return cmd_ui_names(argc - 1, argv + 1); }
     if (strcmp(sub, "get") == 0)    { return cmd_ui_get(argc - 1, argv + 1); }
