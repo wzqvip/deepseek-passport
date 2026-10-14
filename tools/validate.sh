@@ -71,6 +71,10 @@ run_static_checks() {
         -o "${test_dir}/test_passport_tone" -lm
     "${test_dir}/test_passport_tone"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_passport_identity.c main/passport_identity.c \
+        -o "${test_dir}/test_passport_identity"
+    "${test_dir}/test_passport_identity"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_key_guard.c -o "${test_dir}/test_key_guard"
     "${test_dir}/test_key_guard"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src \

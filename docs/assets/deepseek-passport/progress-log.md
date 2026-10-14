@@ -19,6 +19,69 @@ Rules for this log:
 
 ---
 
+## 2026-10-15 — Session 34: "the password is wrong" was a crash, not a password
+
+**The report from the owner:** the phone said the Wi-Fi password was wrong and would not connect.
+
+It was not the password. On the device, `prov start` aborted:
+
+```text
+E esp_netif_lwip: esp_netif_new_api: Failed to configure netif (config or if_key is NULL or duplicate key)
+assert failed: esp_netif_create_default_wifi_ap wifi_default.c:408 (netif)
+```
+
+**What was wrong.** `passport_provision_start()` created the access point's network interface on every
+call, and `passport_provision_stop()` never destroyed it. So the **second** time the setup screen was
+opened, `esp_netif_create_default_wifi_ap()` was called on an interface that already existed — and that
+function does not return an error, it asserts and reboots the device. The setup screen had already drawn
+the hotspot name, the password and the join code, so from the owner's side the device was advertising a
+network, the code looked right, and the phone would not associate. A phone reports that as "incorrect
+password", because that is the only thing a user can act on.
+
+This is the same class of defect as the one found in Session 31, in the same file: state that is created
+per call and released per call, where one of the two sides was not written. The first was a stack, this
+one an interface.
+
+**The fix.** The page buffer and the network interface are created once and kept for the lifetime of the
+run; the interface is no longer recreated on start nor expected to vanish on stop. Verified by the
+sequence that used to abort it:
+
+```text
+prov start -> access point : up
+prov stop
+prov start -> access point : up
+prov stop
+prov start -> access point : up
+```
+
+No assert, no register dump, and the hotspot is up after each cycle.
+
+**The console now answers this question directly.** `prov status` reads the configuration back **from
+the Wi-Fi driver** and compares it with what the screen shows, because "the password is wrong" is a claim
+about the radio rather than about this application's strings:
+
+```text
+access point : up
+ssid         : Passport-91E1
+password     : <ten characters, shown on the device's screen>
+radio        : ssid "Passport-91E1" password "<the same ten characters>" auth WPA2-PSK channel 6
+agreement    : the radio matches the screen
+```
+
+**And the password can no longer be misread.** It used to be eight hexadecimal digits, which contain
+`1` — the character most often mistyped as `l` or `I` — twice, typed by a person from a 240-pixel screen.
+It is now ten characters from an alphabet with `i`, `l`, `o`, `0` and `1` removed, which is both easier to
+type and stronger (31^10 against 16^8). The derivation moved into `passport_identity.c`, which is pure
+and host-tested: the test asserts the length, the absence of every confusable character, that the same
+board always produces the same credentials, and that neighbouring MAC addresses do not.
+
+**Not verified, and it is the one thing that matters to the owner:** that a client can associate. This
+machine's wireless radio is software-off and enabling it needs a privilege this session does not have, so
+the host could not be the test client. The radio's configuration, the authentication mode, the channel and
+the agreement with the screen are all confirmed on the device; the association itself needs a phone.
+
+---
+
 ## 2026-10-14 — Session 33: the complete gate, and the deep-sleep omission it found
 
 **Milestone:** the repository's whole validation gate runs, and it found something that had been missing

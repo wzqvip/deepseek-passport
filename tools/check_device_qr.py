@@ -8,12 +8,18 @@ whether a **phone** can read it off the glass. This script answers the first one
 person's check, because it depends on the panel, the lighting and the camera.
 
 Usage:
-    python tools/check_device_qr.py captured.txt
+    python tools/check_device_qr.py captured.txt --exact "WIFI:T:WPA;S:...;P:...;;"
     python tools/check_device_qr.py captured.txt --payload v3_wifi
 
 `captured.txt` is the console output of `prov qr`, or just the matrix with the header line.
-The payloads come from `make_qr_fixture.py`, which is the one place they are recorded — the device's
-own payload contains the hotspot password, so it is matched rather than printed here.
+
+Two modes, because there are two different questions. `--exact` is given the device's **own** join string
+and compares the symbol it drew against the reference implementation for that payload: that is the check
+that matters for the code on the glass. Without it, the synthetic payloads from `make_qr_fixture.py` are
+tried instead, which checks the encoder rather than a particular device.
+
+Either way the payload travels on the command line rather than being stored here, because it contains the
+access point's password, and the capture must not be committed either.
 
 The mask is the interesting part. The firmware picks one by scoring the specification's penalty rules,
 and that choice has never had an independent oracle: the `segno` package was tried for it and disagreed
@@ -76,6 +82,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("capture", help="file holding the output of `prov qr`")
     parser.add_argument("--payload", help="limit the comparison to one fixture payload by name")
+    parser.add_argument(
+        "--exact",
+        help="the device's own join string, compared against the reference implementation directly. "
+             "It contains the access point's password, so it is passed in rather than stored here, and "
+             "the capture it came from must not be committed either.",
+    )
     args = parser.parse_args()
 
     output = Path(args.capture).read_text(encoding="utf-8", errors="replace")
@@ -86,6 +98,22 @@ def main():
           f" matrix {len(matrix)}x{len(matrix[0]) if matrix else 0}")
     if modules is not None and matrix and len(matrix) != modules:
         print(f"  note: the stated module count is {modules}, the matrix is {len(matrix)} wide")
+
+    if args.exact:
+        # The device's real payload. This is the check that matters for the code on the glass: the
+        # fixtures are synthetic and deliberately no longer match any device.
+        for mask in range(8):
+            if reference_matrix(args.exact, version, mask) == matrix:
+                if mask == stated_mask:
+                    print(f"MATCH: the matrix is the reference symbol for the device's own payload"
+                          f" under mask {mask}, which is the mask the device states")
+                    return 0
+                print(f"MISMATCH: the symbol is valid for the device's payload under mask {mask},"
+                      f" but the device states mask {stated_mask}")
+                return 1
+        print("NO MATCH: the matrix is not the reference symbol for the payload given,"
+              " under any of the eight masks")
+        return 1
 
     for name, payload, case_version in CASES:
         if args.payload and name != args.payload:

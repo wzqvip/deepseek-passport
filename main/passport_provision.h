@@ -24,6 +24,14 @@ esp_err_t passport_provision_start(void);
 esp_err_t passport_provision_stop(void);
 
 bool passport_provision_active(void);
+// The hotspot's name and password, derived from the device's MAC so they are stable across reboots and
+// unique per board. Both are shown on the setup screen and carried in the join code.
+//
+// The password is ten characters from an alphabet with i, l, o, 0 and 1 removed, because it is read off
+// a small screen and typed by a person: those five are the ones that get mistyped, and a phone reports
+// a mistyped character as an incorrect password.
+#define PASSPORT_AP_PASSWORD_LENGTH 10
+
 const char *passport_provision_ssid(void);
 const char *passport_provision_password(void);
 const char *passport_provision_address(void);

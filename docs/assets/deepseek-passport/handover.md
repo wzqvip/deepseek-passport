@@ -59,7 +59,12 @@ On the work screen: UP and DOWN move the selection, OK confirms, holding OK goes
 On the setup screen: OK goes home. While it is open the device runs its own hotspot
 (`Passport-91E1`, WPA2) and serves a configuration page at `http://192.168.4.1/` — every setting the
 serial console can change, without a cable. Joining the hotspot usually opens that page by itself,
-because the captive-portal probes are answered.
+because the captive-portal probes are answered. The password is ten characters from an alphabet with
+`i`, `l`, `o`, `0` and `1` removed, because it is read off a small screen and typed by a person.
+
+If a phone will not connect, ask the device first: `prov status` reads the access point's configuration
+back **from the radio** and reports whether it agrees with what the screen shows. A disagreement there
+means nothing typed will ever work, and it is a different problem from a mistyped character.
 
 The serial console at 115200 baud is the whole diagnostic surface: `help` lists the commands and the
 [serial console document](serial-cli.md) explains the two contracts they keep. `ui audit` is the one

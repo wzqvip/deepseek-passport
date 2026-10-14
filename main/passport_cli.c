@@ -26,6 +26,7 @@
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "lvgl.h"
 #include "passport_app.h"
 #include "passport_audio.h"
@@ -1379,6 +1380,39 @@ static int cmd_prov(int argc, char **argv)
         printf("password     : %s\n", passport_provision_password());
         printf("address      : http://%s/\n", passport_provision_address());
         printf("station      : %s\n", passport_wifi_state_name(passport_wifi_state()));
+        // What the radio is actually configured with, read back from the driver rather than from this
+        // application's own strings. "The password is wrong" is a report about the radio's
+        // configuration, so the answer has to come from the radio: if these two ever disagree, the
+        // screen is lying and nothing a person types will work.
+        wifi_config_t live;
+        memset(&live, 0, sizeof(live));
+        if (esp_wifi_get_config(WIFI_IF_AP, &live) == ESP_OK) {
+            char live_ssid[33];
+            const size_t n = (live.ap.ssid_len != 0u) ? live.ap.ssid_len : strlen((char *)live.ap.ssid);
+            memcpy(live_ssid, live.ap.ssid, (n < sizeof(live_ssid) - 1u) ? n : sizeof(live_ssid) - 1u);
+            live_ssid[(n < sizeof(live_ssid) - 1u) ? n : sizeof(live_ssid) - 1u] = '\0';
+            const char *auth = "?";
+            switch (live.ap.authmode) {
+            case WIFI_AUTH_OPEN: auth = "open"; break;
+            case WIFI_AUTH_WEP: auth = "WEP"; break;
+            case WIFI_AUTH_WPA_PSK: auth = "WPA-PSK"; break;
+            case WIFI_AUTH_WPA2_PSK: auth = "WPA2-PSK"; break;
+            case WIFI_AUTH_WPA_WPA2_PSK: auth = "WPA/WPA2-PSK"; break;
+#if CONFIG_ESP_WIFI_SOFTAP_SUPPORT
+            case WIFI_AUTH_WPA3_PSK: auth = "WPA3-PSK"; break;
+            case WIFI_AUTH_WPA2_WPA3_PSK: auth = "WPA2/WPA3-PSK"; break;
+#endif
+            default: break;
+            }
+            const bool match = (strcmp(live_ssid, passport_provision_ssid()) == 0) &&
+                               (strcmp((char *)live.ap.password, passport_provision_password()) == 0);
+            printf("radio        : ssid \"%s\" password \"%s\" auth %s channel %u\n", live_ssid,
+                   (char *)live.ap.password, auth, (unsigned)live.ap.channel);
+            printf("agreement    : %s\n",
+                   match ? "the radio matches the screen" : "MISMATCH - the screen is not what the radio broadcasts");
+        } else {
+            printf("radio        : not configured (the access point is not running)\n");
+        }
         return 0;
     }
 

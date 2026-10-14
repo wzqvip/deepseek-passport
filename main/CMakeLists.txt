@@ -9,6 +9,7 @@ idf_component_register(
          "passport_config.c"
          "passport_config_store.c"
          "passport_http.c"
+         "passport_identity.c"
          "passport_json.c"
          "passport_fonts.c"
          "passport_portal.c"

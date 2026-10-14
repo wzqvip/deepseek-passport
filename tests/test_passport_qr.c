@@ -18,8 +18,10 @@
 
 #define CASE_HELLO      "HELLO"
 #define CASE_SHORT_WIFI "WIFI:T:WPA;S:Pet;P:12345678;;"
-#define CASE_WIFI       "WIFI:T:WPA;S:Passport-91E1;P:pae2f91e1;;"
-#define CASE_LONG_WIFI  "WIFI:T:WPA;S:Passport-91E1-Extended-Name;P:pae2f91e1;H:false;;"
+// Synthetic join strings, matching tools/make_qr_fixture.py. They used to be shaped exactly like this
+// device's real one, which put a live access-point password in the repository.
+#define CASE_WIFI       "WIFI:T:WPA;S:Passport-TEST;P:hjkmpqrstu;;"
+#define CASE_LONG_WIFI  "WIFI:T:WPA;S:Passport-TEST-Extended-Pad;P:hjkmpqrstu;H:false;;"
 
 static const char *const *const V1_HELLO_MASKS[8] = {
     V1_HELLO_M0, V1_HELLO_M1, V1_HELLO_M2, V1_HELLO_M3,

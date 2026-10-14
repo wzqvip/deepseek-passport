@@ -37,9 +37,12 @@ from qrcode.util import MODE_8BIT_BYTE, QRData
 CASES = [
     ("v1_hello", "HELLO", 1),                                                  # 5 bytes
     ("v2_short_wifi", "WIFI:T:WPA;S:Pet;P:12345678;;", 2),                      # 30 bytes
-    ("v3_wifi", "WIFI:T:WPA;S:Passport-91E1;P:pae2f91e1;;", 3),                 # 40 bytes
+    # Fixture payloads are synthetic. They used to be shaped like this device's real join string,
+    # which meant a live access-point password sat in the repository. The shapes are kept; the values
+    # are not, and no fixture value is produced by the device any more.
+    ("v3_wifi", "WIFI:T:WPA;S:Passport-TEST;P:hjkmpqrstu;;", 3),                # 41 bytes
     ("v4_long_wifi",
-     "WIFI:T:WPA;S:Passport-91E1-Extended-Name;P:pae2f91e1;H:false;;", 4),      # 62 bytes
+     "WIFI:T:WPA;S:Passport-TEST-Extended-Pad;P:hjkmpqrstu;H:false;;", 4),      # 62 bytes
 ]
 
 

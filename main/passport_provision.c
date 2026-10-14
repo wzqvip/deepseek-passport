@@ -18,6 +18,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "passport_config_store.h"
+#include "passport_identity.h"
 #include "passport_portal.h"
 #include "passport_wifi.h"
 
@@ -350,6 +351,10 @@ static esp_err_t register_routes(void)
 // The access point name and password come from the MAC, so they are stable across reboots
 // and unique per device without a factory partition. The password is displayed on screen;
 // the point of protecting the AP is that the setup page can write credentials.
+//
+// The derivation itself lives in passport_identity.c, which is pure and host-tested: these are
+// credentials a person reads off a small screen and types into a phone, so the alphabet (no i, l, o, 0
+// or 1) and the length are properties worth a test rather than a code review.
 static void derive_identity(void)
 {
     uint8_t mac[6] = { 0 };
@@ -357,9 +362,11 @@ static void derive_identity(void)
         mac[4] = 0xAA;
         mac[5] = 0xBB;
     }
-    snprintf(s_ssid, sizeof(s_ssid), "Passport-%02X%02X", mac[4], mac[5]);
-    // Eight characters: long enough for the WPA2 minimum, short enough to type.
-    snprintf(s_password, sizeof(s_password), "p%02x%02x%02x%02x", mac[2], mac[3], mac[4], mac[5]);
+    if (!passport_identity_from_mac(mac, s_ssid, sizeof(s_ssid), s_password, sizeof(s_password))) {
+        ESP_LOGE(TAG, "热点凭据推导失败:缓冲不足");
+        s_ssid[0] = '\0';
+        s_password[0] = '\0';
+    }
 }
 
 esp_err_t passport_provision_start(void)
@@ -375,17 +382,31 @@ esp_err_t passport_provision_start(void)
 
     derive_identity();
 
-    s_page = malloc(PAGE_MAX);    if (s_page == NULL) {
-        ESP_LOGE(TAG, "页面缓冲分配失败");
-        return ESP_ERR_NO_MEM;
+    // The page buffer and the access point's network interface are created once and kept for the
+    // lifetime of the run.
+    //
+    // Both were created here on every start, and the interface was never destroyed on stop. Opening
+    // the setup screen a second time therefore called esp_netif_create_default_wifi_ap() on an
+    // interface that already existed, which does not return an error — it aborts:
+    //
+    //     assert failed: esp_netif_create_default_wifi_ap (config or if_key is NULL or duplicate key)
+    //
+    // The device rebooted, the screen had already shown the join code, and the owner was left trying
+    // to connect to a hotspot that was not running. The report was "the password is wrong", which is
+    // what a phone says when it cannot complete an association for any reason at all.
+    if (s_page == NULL) {
+        s_page = malloc(PAGE_MAX);
+        if (s_page == NULL) {
+            ESP_LOGE(TAG, "页面缓冲分配失败");
+            return ESP_ERR_NO_MEM;
+        }
     }
-
-    s_ap_netif = esp_netif_create_default_wifi_ap();
     if (s_ap_netif == NULL) {
-        ESP_LOGE(TAG, "热点网络接口创建失败");
-        free(s_page);
-        s_page = NULL;
-        return ESP_FAIL;
+        s_ap_netif = esp_netif_create_default_wifi_ap();
+        if (s_ap_netif == NULL) {
+            ESP_LOGE(TAG, "热点网络接口创建失败");
+            return ESP_FAIL;
+        }
     }
 
     // APSTA so an already-configured device keeps answering on the station interface.
@@ -470,7 +491,9 @@ esp_err_t passport_provision_stop(void)
         s_server = NULL;
     }
     if (s_active) {
-        // Keep the station, drop only the access point.
+        // Keep the station, drop only the access point. The interface itself stays: it is created once
+        // and reused, which is what keeps a second visit to the setup screen from aborting the device.
+        // The route handlers and the page buffer survive too, and are reused as they are.
         esp_wifi_set_mode(WIFI_MODE_STA);
         s_active = false;
         ESP_LOGI(TAG, "热点已关闭");
