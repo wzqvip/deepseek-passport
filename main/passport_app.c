@@ -82,14 +82,14 @@ static lv_obj_t *s_wifi_bars[3];
 // The hint line has two states, and the confirmation is the reason: it has to be obvious that the
 // buttons mean something different while it is showing.
 #define HINT_DEFAULT "按住OK说话   长按DOWN工作\n长按UP配网   双击UP待机"
-#define HINT_CONFIRM "OK: 重新配网    DOWN: 取消"
+#define HINT_CONFIRM "OK: 进入配网模式   DOWN: 取消"
 
 // Set by the button task, acted on by the worker: a long press of UP when this device is already on a
 // network asks first. Re-provisioning is not destructive by itself, but it does raise a hotspot and put
 // a join code on the screen, and someone who is already online usually pressed the button by accident.
 static bool s_confirming;
 static int64_t s_confirm_deadline_us;
-#define CONFIRM_WINDOW_US (12LL * 1000 * 1000)
+#define CONFIRM_WINDOW_US (20LL * 1000 * 1000)
 // Used by show_home(), which is defined above the question it interrupts.
 static void end_confirmation(bool confirmed);
 static lv_obj_t *s_bubble;
@@ -232,7 +232,11 @@ static void build_home(void)
 // chosen for a phone camera: the panel is 240 pixels wide, and three pixels per module
 // plus the four-module quiet zone on each side is about as large as this screen allows.
 #define QR_TARGET_SIDE 128
-#define QR_QUIET_ZONE  4
+// Two modules of quiet zone rather than the specification's four. Every reader in practice needs at
+// least two, the panel is 240 pixels wide, and four of them on each side is another 5 KB of pixel buffer
+// on a device where the web console and the code compete for the same memory. The value is reported to
+// the console by `prov pixels`, so a check of the drawn symbol knows what to expect.
+#define QR_QUIET_ZONE  2
 
 static lv_image_dsc_t s_qr_dsc;
 static uint16_t *s_qr_pixels;
@@ -831,15 +835,20 @@ static void begin_confirmation(void)
     s_confirm_deadline_us = esp_timer_get_time() + CONFIRM_WINDOW_US;
     // Order matters here too: set_mood() writes that mood's stock line into the bubble.
     set_mood(PASSPORT_PET_CURIOUS, 0);
+
+    // The question shows what it is asking about: the network this device is on, its address, and the
+    // page that address serves. Someone who long-presses this button on a working device is usually
+    // after the address rather than after a re-provision, so making them enter the setup screen to read
+    // it — and tearing the network down to show a hotspot — would be the wrong way round.
+    char ip[20];
+    passport_wifi_ip(ip, sizeof(ip));
     char line[BUBBLE_MAX];
-    // The network name is bounded here: a bubble is two lines, the full name is on the setup screen, and
-    // an unbounded %s could overflow a buffer this size.
-    snprintf(line, sizeof(line), "已连接 %.24s。要重新配网吗?",
-             passport_config_current()->wifi_ssid);
+    snprintf(line, sizeof(line), "网络 %.20s\n地址 %.15s\n网页 http://%.15s/",
+             passport_config_current()->wifi_ssid, ip, ip);
     set_bubble(line);
     set_hint_text(HINT_CONFIRM);
     bsp_lvgl_unlock();
-    ESP_LOGI(TAG, "已联网,询问是否重新配网");
+    ESP_LOGI(TAG, "已联网(%s),询问是否进入配网模式", ip);
 }
 
 static void end_confirmation(bool confirmed)

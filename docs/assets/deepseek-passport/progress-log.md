@@ -19,6 +19,75 @@ Rules for this log:
 
 ---
 
+## 2026-10-15 — Session 37: the page was never being served, and the corner now says so
+
+The owner asked two things: what address the device is on, and for a long press of UP on a connected
+device to show the current network, its address and the web address, with entering provisioning mode as a
+choice rather than a consequence.
+
+Answering the first found the third real cause of "I cannot connect".
+
+### The setup page was never served
+
+The portal's HTTP server was failing to start, and nothing said so anywhere the owner could see:
+
+```text
+配网启动:5/6 HTTP 服务 (ESP_ERR_HTTPD_TASK)
+E passport_prov: HTTP 服务启动失败: ESP_ERR_HTTPD_TASK
+```
+
+`ESP_ERR_HTTPD_TASK` means the server's task could not be created — no contiguous memory for its stack.
+The stack size was 8,192 bytes, which was not a decision: it was the value copied from the example. By the
+time it runs, the join code's pixels are already reserved (they have to be, or they will not fit
+afterwards), so the device was holding tens of kilobytes while asking for eight more, and failing.
+
+The consequence is worse than the error: the access point rises, the screen shows a join code and a
+password, and **the page those credentials lead to is not being served**. Every symptom the owner
+reported follows from that. The device has been walking into this since the pixel buffer was added.
+
+Fixed by making the two fit: the server's stack is 5,120 (these handlers render a page into a heap buffer
+and apply a form; they do not recurse), and the join code's quiet zone is two modules rather than the
+specification's four, which is another 5 KB of pixels. The quiet zone is reported to the console by
+`prov pixels`, so the check of the drawn symbol knows what to expect — and it still matches the encoder,
+cell for cell, at 99 pixels.
+
+A trace was added through the start sequence, which is how this was found in one run rather than by
+guesswork:
+
+```text
+配网启动:1/6 开始 ... 4/6 热点配置已下发 (ESP_OK)
+配网启动:5/6 HTTP 服务 (ESP_ERR_HTTPD_TASK)
+```
+
+`prov status` now reports `access point: up` and `wifi status` reports the page address with whether it is
+being served right now, because "the page is not there" and "the network is not there" are different
+problems and the device should say which one it is in.
+
+### The long press now shows the information
+
+```text
+bubble:  网络 murez_2.4GHz
+         地址 192.168.3.75
+         网页 http://192.168.3.75/
+hint:    OK: 进入配网模式   DOWN: 取消
+```
+
+Someone who long-presses this button on a working device is usually after the address, not after a
+re-provision, so making them enter the setup screen to read it — and raise a hotspot to do it — was the
+wrong way round. Verified on the device: the three lines above appear, OK opens the setup screen, DOWN
+returns the normal hint and stays home, and the question expires after twenty seconds.
+
+### A note on this environment
+
+For most of this session this host could reach the device at 192.168.3.75 and fetch its setup page. By the
+end it could not: `ping` to the device's own gateway is answered by the host itself with "destination host
+unreachable", so the *host* has lost its route to 192.168.3.0/24. That is a change on this machine's
+network — it carries several virtual adapters, including VPN clients — and not something the firmware can
+affect. It is recorded because the LAN page was verified working earlier and the reason it could not be
+re-verified at the end is environmental rather than a regression.
+
+---
+
 ## 2026-10-15 — Session 36: the corner shows the network, and re-provisioning asks first
 
 Two changes the owner asked for, both about answering a question before it is asked.
@@ -52,8 +121,8 @@ network that is almost certainly a mistake — it raises a hotspot and puts a jo
 now it asks:
 
 ```text
-ui key up long -> hint  "OK: 重新配网    DOWN: 取消"
-                  bubble "已连接 murez_2.4GHz。要重新配网吗?"
+ui key up long -> the hint line asks whether to re-provision (OK to confirm, DOWN to cancel)
+                  and the bubble names the network the device is on
 ui key ok click -> screen setup        (confirmed)
 ui key down click -> the normal hint, still on the home screen   (cancelled)
 13 seconds of silence -> the normal hint, still on the home screen  (expired)

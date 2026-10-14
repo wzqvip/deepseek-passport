@@ -1696,6 +1696,12 @@ static int cmd_wifi(int argc, char **argv)
         printf("address  : %s\n", (ip[0] != '\0') ? ip : "(none)");
         printf("ssid     : %s\n", (cfg->wifi_ssid[0] != '\0') ? cfg->wifi_ssid : "(not configured)");
         printf("password : %s\n", (cfg->wifi_password[0] != '\0') ? "(set)" : "(empty)");
+        // The page this address serves, and whether it is being served right now: the console answers
+        // only while the setup portal is running, which is what entering provisioning mode starts.
+        if (ip[0] != '\0') {
+            printf("web      : http://%s/ %s\n", ip,
+                   passport_provision_active() ? "(serving now)" : "(only while the setup portal is up)");
+        }
         return 0;
     }
 

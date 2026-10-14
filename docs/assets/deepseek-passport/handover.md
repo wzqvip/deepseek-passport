@@ -51,7 +51,7 @@ On the home screen:
 | --- | --- |
 | **Hold OK, speak, release** | A spoken turn: record → transcribe → ask DeepSeek → answer on screen and spoken |
 | Hold DOWN | Work mode |
-| Hold UP | The setup screen: the join QR code, the hotspot name and password, the address. **On a device that is already on a network this asks first** — the hint line becomes "OK: re-provision, DOWN: cancel" — and it expires after twelve seconds if nobody answers |
+| Hold UP | The setup screen: the join QR code, the hotspot name and password, the address. **On a device that is already on a network this asks first, and shows the network, its address and the web address** — the hint line offers entering provisioning mode or cancelling — and it expires after twenty seconds if nobody answers |
 | Double-press UP | Stand by: deep sleep, waking on any key |
 
 The top-right corner shows whether the device is on a network and how well, next to the battery: the word

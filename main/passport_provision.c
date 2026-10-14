@@ -474,6 +474,10 @@ esp_err_t passport_provision_start(void)
     if (s_active) {
         return ESP_OK;
     }
+    // A trace through the start sequence. The hotspot once failed to come up with nothing in the log
+    // to say where it stopped, which left "is it running?" to be guessed at from the outside; the step
+    // markers make the answer a line in the console instead.
+    ESP_LOGI(TAG, "配网启动:1/6 开始");
 
     // Watch the access point's own events, before anything raises it: WIFI_EVENT_AP_START is emitted
     // as soon as the interface is beaconing, and a handler registered after esp_wifi_set_config()
@@ -492,6 +496,7 @@ esp_err_t passport_provision_start(void)
     }
 
     esp_err_t err = passport_wifi_init();   // also brings up netif and the event loop
+    ESP_LOGI(TAG, "配网启动:2/6 网络栈 (%s)", esp_err_to_name(err));
     if (err != ESP_OK) {
         return err;
     }
@@ -527,6 +532,7 @@ esp_err_t passport_provision_start(void)
 
     // APSTA so an already-configured device keeps answering on the station interface.
     err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    ESP_LOGI(TAG, "配网启动:3/6 模式已设为 APSTA (%s)", esp_err_to_name(err));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "切换到 APSTA 失败: %s", esp_err_to_name(err));
         return err;
@@ -567,6 +573,7 @@ esp_err_t passport_provision_start(void)
     ap_cfg.ap.pmf_cfg.required = false;
 
     err = esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+    ESP_LOGI(TAG, "配网启动:4/6 热点配置已下发 (%s)", esp_err_to_name(err));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "热点配置失败: %s", esp_err_to_name(err));
         return err;
@@ -580,15 +587,26 @@ esp_err_t passport_provision_start(void)
     httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
     http_cfg.max_uri_handlers = 8;
     http_cfg.lru_purge_enable = true;
-    http_cfg.stack_size = 8192;
+    // 5120 rather than the default 8192. The handlers render a page into a heap buffer and apply a
+    // form; they do not recurse and they do not hold large structures on the stack. The larger default
+    // was not a decision, it was a copy — and it cost the whole web console: by the time this runs, the
+    // join code's pixels are already reserved (they have to be, or they will not fit afterwards), and
+    // eight kilobytes of contiguous stack was more than the remainder could give:
+    //
+    //     HTTP 服务启动失败: ESP_ERR_HTTPD_TASK
+    //
+    // which left a device showing a join code for a page that was not being served.
+    http_cfg.stack_size = 5120;
     http_cfg.uri_match_fn = httpd_uri_match_wildcard;
 
     err = httpd_start(&s_server, &http_cfg);
+    ESP_LOGI(TAG, "配网启动:5/6 HTTP 服务 (%s)", esp_err_to_name(err));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "HTTP 服务启动失败: %s", esp_err_to_name(err));
         return err;
     }
     err = register_routes();
+    ESP_LOGI(TAG, "配网启动:6/6 路由注册 (%s)", esp_err_to_name(err));
     if (err != ESP_OK) {
         httpd_stop(s_server);
         s_server = NULL;
