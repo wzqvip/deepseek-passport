@@ -39,15 +39,24 @@ Reasons:
 
 1. It removes the largest RAM risk (an Opus codec) and the second largest (an MP3
    decoder plus resampling). Both ends of the wire are raw PCM.
-2. Provider keys stay off a device that can be lost, and switching provider
-   becomes a bridge configuration change instead of a firmware release. This *is*
-   requirement `R-B4`, solved once.
+2. Switching provider becomes a configuration change instead of a firmware
+   release. This *is* requirement `R-B4`, solved once. Routing through the bridge
+   also keeps credentials off a device that can be lost, but the product owner
+   accepted on-device plain-text storage on `Q-4`, so that is a preference rather
+   than a rule.
 3. Sentence-level text-to-speech pipelining on the bridge is the single biggest
    lever on time to first audio, and it is much easier to implement there.
 4. Good cloud turn detection replaces approximating it on one 160 MHz core.
 
 The device transmits about 32 KB/s and receives about 32–48 KB/s depending on the
 provider's rate. A 32 KB playback ring is roughly 0.7–1 s of slack.
+
+The cascade is the same in both deployment modes. What changes between them is
+only **where the three stages run**: on the computer in bridge mode, or on the
+device itself in direct mode, which the product owner approved on `Q-4`. The
+device-side audio rules do not change at all, and that is exactly why direct mode
+is affordable: PCM in and PCM out means the device needs no codec, no resampler,
+and no large staging buffer wherever the stages run.
 
 ## 3. Speech-to-text options
 
@@ -59,10 +68,11 @@ provider's rate. A 32 KB playback ring is roughly 0.7–1 s of slack.
 | Chinese streaming recognition services | WebSocket with interim results | Yes | Best Chinese accuracy and lowest latency from within mainland China; endpoint shapes differ per vendor |
 | Batch transcription at a high-throughput host | HTTP multipart | No | Very cheap, very fast turnaround, no streaming |
 
-Selection for the first implementation: a batch HTTP transcription as the
-baseline (simplest, cheapest, no protocol work), with a streaming option behind
-the same interface as the second adapter. Chinese-first deployments should prefer
-a domestic streaming service.
+Selection changed once the product owner required partial transcription on screen
+(`Q-5`): a streaming service with interim results is now the baseline, and batch
+HTTP transcription is the cost-saving alternative that simply shows no live text.
+A Chinese-first deployment should prefer a domestic streaming service, which is
+also the strongest option for Mandarin accuracy.
 
 ## 4. Language model
 

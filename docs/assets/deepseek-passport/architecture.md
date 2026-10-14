@@ -30,6 +30,12 @@ rewritten here.
 The single most important number above is the **largest free block**, not total
 free heap. It is the resource this project will actually run out of.
 
+Decisions taken by the product owner on 2026-10-13 are recorded in
+[requirements.md](requirements.md#61-answered) and are reflected throughout this
+document. The two that change the design most are that the device may hold
+provider credentials and talk to providers directly, and that the default power
+profile is always connected.
+
 
 ## 1. The one constraint that shapes everything
 
@@ -104,24 +110,43 @@ Three tiers. The device is a thin terminal; the bridge owns orchestration.
 +--------------------------------------------------------------------------+
 ```
 
-### 2.1 Why a bridge instead of device-direct calls
+### 2.1 Two supported deployment modes
 
-Device-direct calls were designed first and rejected as the default. The
-comparison:
+The product owner approved both modes (`Q-4`): the device may hold provider
+credentials and call providers directly, and plain-text credential storage is
+accepted. The bridge is therefore not a prerequisite for conversation. It is what
+adds agent-session mirroring, provider switching without a firmware release, and
+keeping credentials off a device that can be lost.
 
-| Concern | Device-direct | Through a bridge |
+| Mode | What it needs | What it gives |
 | --- | --- | --- |
-| Peak RAM | One TLS session per phase, three phases, plus response buffers, on a device that also runs the UI | One plain-HTTP socket on the LAN for all three phases |
-| Credentials | Every provider key stored on a device that is physically losable | Keys stay on the computer |
-| Audio format | The device must accept whatever codec the provider emits | The bridge normalizes everything to 16 kHz 16-bit mono PCM |
-| Provider churn | Each provider change is a firmware release | A bridge configuration change |
-| Latency | One fewer hop | One extra LAN hop, roughly 5–20 ms — negligible next to network provider latency |
-| Offline LAN use | Impossible | The bridge can serve cached phrases and the local agent link with no Internet at all |
+| **Direct** — the standalone baseline | Provider credentials on the device, one serialized TLS session per stage, reduced TLS buffers | A complete voice turn with no computer involved |
+| **Through the bridge** — recommended whenever a computer is available | A bridge on the same network | Work mode, provider flexibility, credentials kept on the computer, and one audio format on the device side |
 
-Direct mode remains a **designed fallback**, not the baseline: when the bridge is
-unreachable and the user has configured a provider key on the device, the device
-may perform a single serialized provider call chain. It is behind an explicit
-setting, and it is the largest memory risk in the project (open question `Q-4`).
+The trade-offs that shaped the first draft still apply; they now explain why the
+bridge is *preferred* rather than why direct mode is excluded:
+
+| Concern | Direct | Through a bridge |
+| --- | --- | --- |
+| Peak RAM | One TLS session per stage, three stages, strictly serialized, plus response buffers, alongside the UI | One plain-HTTP socket on the LAN for all three stages |
+| Credentials | Stored on a device that can be lost, in plain text as the owner accepted | Stay on the computer |
+| Audio format | The device must accept whatever rate the provider emits | The bridge normalizes to one rate |
+| Provider churn | Each provider change is a firmware release | A bridge configuration change |
+| Latency | One fewer hop | One extra LAN hop, roughly 5–20 ms — negligible next to provider latency |
+| Without a computer | Works | Conversation is unavailable; work mode needs the computer in both modes |
+
+Because direct mode is now on the critical path, its memory cost is a first-class
+risk rather than a footnote. What makes it plausible on this board:
+
+- Stages are strictly serialized and each connection is closed before the next
+  opens, so only one security context is live at a time.
+- TLS input and output content lengths are reduced from their defaults, and the
+  firmware's own buffers are allocated once at start-up rather than per turn.
+- Every response has an explicit size cap, and each parser is sized from that
+  cap, because a fixed 4096-byte document already caused a crash on this board.
+- `M1` measures the largest free block with a live TLS session, before any
+  provider code is written. A negative result changes this decision; it does not
+  change the measurement.
 
 ## 3. Voice conversation pipeline
 
@@ -180,6 +205,12 @@ milestone and records the choice in the progress log:
 The bridge replies with a single JSON document per turn describing the transcript
 and the reply, or an error object. The device does not need to understand SSE
 from the bridge; streaming is the bridge's internal concern.
+
+In direct mode the device performs the same three stages itself, one serialized
+HTTPS connection each: upload the utterance to the speech-to-text endpoint, stream
+the language-model response, then synthesize sentence by sentence. It parses the
+provider's server-sent-event stream directly. That is more device code than the
+bridge path, and it is the point at which the device stops being a thin terminal.
 
 ### 3.4 Reply: text first, then speech
 
@@ -252,7 +283,7 @@ provider that returns raw PCM at a rate the codec can open removes the decoder
 from the firmware entirely; a provider that returns only MP3 makes a 30–40 KB
 decoder and its CPU cost mandatory.
 
-Two provider-level traps are recorded here because neither is visible in a
+Three provider-level constraints are recorded here because none is visible in a
 text-only test:
 
 - The default language-model endpoint may **enable a reasoning mode by default**,
@@ -261,6 +292,10 @@ text-only test:
 - Most text-to-speech providers **do not publish time to first byte**, so the
   latency target `R-B7` cannot be validated from documentation. It has to be
   measured with a harness on the bridge.
+- Partial transcription is now a **requirement rather than a preference**
+  (`Q-5`): the screen shows text as it arrives. A back end that returns only a
+  final transcript cannot be the default. Batch transcription stays supported as
+  a cost-saving alternative that simply shows no live text.
 
 The provider survey, current prices, and the rejected options are recorded
 separately in [voice back ends](voice-backends.md).
@@ -334,9 +369,23 @@ Behavioural rules:
 - Answering acknowledges the event sequence number so the question is not shown
   again after a restart.
 - Notifications are user-configurable per event class: silent, chime, or speak.
-- Delivery is poll-based by default. Power profile decides the poll interval; the
-  battery profile trades delay for idle current and says so in the web console
-  (requirement `R-D2`, open question `Q-8`).
+- Delivery is poll-based by default. The power profile decides the poll interval;
+  the always-connected profile keeps the network and the link alive, and the
+  battery profile trades delivery delay for idle current and says so in the web
+  console (requirement `R-D2`).
+
+### 4.4 Standby default
+
+The product owner selected the always-connected profile (`Q-8`): while the device
+is idle the network and the bridge link stay alive, so a question that arrives
+with the screen off is delivered within the polling interval and is never lost.
+Deep sleep and the battery profile are deferred, not cancelled; the existing
+upstream key-wake guard behavior is preserved so that profile remains reachable
+without redesign.
+
+The consequence to state plainly: idle current will be dominated by the Wi-Fi
+station, and the first honest measurement of it belongs in `M1` alongside the
+memory numbers.
 
 ## 5. Provisioning and the web console
 
@@ -490,25 +539,38 @@ recoverable.
 
 - Text is set in a pixel font, not an anti-aliased vector font, so the UI reads
   as one coherent style.
+- The sprite palette is a smaller subset of the UI palette; it is recorded with
+  the artwork in [`art/README.md`](art/README.md).
 
 ### 6.2 The pet
 
-An original Q-style whale that echoes the DeepSeek brand color. Expressions, each
-a few animation frames:
+An original Q-version whale facing right, designed in the DeepSeek brand blue.
+The artwork and its reproducible generator live in [`art/`](art/README.md); a
+first pass exists and is awaiting sign-off.
 
-| Expression | Trigger |
+| Property | Value |
 | --- | --- |
-| Idle | default; slow blink, gentle vertical bob |
-| Curious | `UP` / `DOWN` press, new notification |
-| Listening | voice capture active; a small animated waveform |
-| Thinking | language-model round trip in flight |
-| Speaking | reply audio playing; mouth or spout animation |
-| Happy | successful turn, work-mode success |
-| Sleeping | standby with the screen dimmed |
-| Distressed | network or provider failure, low battery |
+| Logical grid | 32 × 32, written at 2× (64 × 64) so pixels stay visibly chunky |
+| Palette | Eleven opaque colours plus transparency, anchored on `#4D6BFE`, the value DeepSeek's own organisation publishes as its brand colour |
+| Expressions | Idle (a two-frame breathing bob), blink, curious, listening, thinking, working, speaking, happy, sleeping, distressed |
+| Flash cost | 12,288 B per frame as RGB565A8; eleven frames is 132 KiB, which is not a constraint against 8 MB |
 
-Additional art: bubble tail, status-strip icons (Wi-Fi, battery, microphone,
-work badge), option-card frame, progress dots, and a QR frame.
+The pet faces right rather than matching the official logo's left-facing pose,
+and its `working` expression raises the tail because DeepSeek's own harness uses
+an animated whale tail as its "agent is working" indicator. The artwork is
+original: the official silhouette was not traced or modified, and the companion
+desktop pet's assets are not reusable because their licence forbids commercial
+use and requires attribution. The reasoning is recorded in
+[`art/README.md`](art/README.md#reference-research-and-independence).
+
+Every frame keeps identical bounds, so animation swaps the image source on a
+single widget and the resident object count never changes. The sprite is drawn
+from flash by LVGL, so the runtime cost is the draw buffer that already exists,
+not the sprite size.
+
+Still to be produced: the bubble tail, the status-strip icons (Wi-Fi, battery,
+microphone, work badge), the option-card frame, the progress dots, and the QR
+frame.
 
 ### 6.3 Rendering strategy
 
@@ -612,14 +674,15 @@ it.
 | Capture ring | 16 KB | Heap, allocated once |
 | Playback ring | 16 KB | Heap, allocated once |
 | Wi-Fi station stack | 40–60 KB | Heap |
-| One TLS session, tuned buffers | 25–35 KB | Heap, only in direct mode |
+| One TLS session, tuned buffers | 25–35 KB | Heap, on the critical path: required in direct mode and in any bridge that uses TLS |
 | HTTP server plus one response buffer | 8–12 KB | Heap |
 | Task stacks (UI, audio, net, input, HTTP) | ~25 KB | Static/heap |
 | Sprites, fonts, SPA | Flash only | Flash |
 
-Peak system heap in bridge mode is therefore dominated by Wi-Fi plus buffers and
-lands near 130–160 KB in total, but **total free heap is not the binding
-constraint**. The measured reference from this board is that the largest
+Peak system heap is therefore dominated by Wi-Fi, one security context, and the
+audio buffers: roughly 130–160 KB in bridge mode, plus about 25–35 KB when the
+device talks to providers itself. **Total free heap is still not the binding
+constraint.** The measured reference from this board is that the largest
 contiguous free block was about 13 KiB before the soft access point and about
 31 KiB after deferring audio initialization. Provisioning, TLS, and a JSON parse
 each need one large contiguous allocation, so this project budgets the largest
@@ -668,7 +731,7 @@ following the existing `tests/` pattern.
 
 | Asset | Threat | Control |
 | --- | --- | --- |
-| Provider API keys | Device loss, log exfiltration | Kept on the bridge by default; on-device storage in NVS; never logged; write-only in the console |
+| Provider API keys | Device loss, log exfiltration | Stored on the device in NVS, in plain text as the product owner accepted (`Q-4`); this is a deliberate loss-of-device risk. The controls that remain are absolute: never logged, never echoed back by the console, never committed to the repository |
 | Harness session | LAN attacker reaching the agent host | The Harness server stays on loopback; the device sees only the bridge's narrow authenticated API |
 | Bridge API | Unauthorized LAN client | Per-device pairing token, shown on the device screen during pairing, required on every request |
 | Wi-Fi credentials | Log or repository leak | Stored only in NVS; the repository gate scans for secrets |
@@ -694,7 +757,8 @@ credentials survive a failed new pair.
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| Peak RAM does not fit with Wi-Fi, TLS, and audio simultaneously | Blocking | Bridge mode avoids device TLS; measure early in `M2`; static allocation for hot buffers; small LVGL pool |
+| Peak RAM does not fit with Wi-Fi, one TLS session, and audio simultaneously | Blocking for direct mode | Measure the largest free block with TLS live in `M1`, before writing provider code; serialize stages; reduce TLS content lengths; allocate hot buffers once; keep the LVGL pool small; routing through the bridge remains a way to avoid device TLS entirely |
+| Plain-text credential storage on a device that can be lost | Whoever holds the device holds the keys | Accepted by the product owner; mitigate by never displaying a secret on the device screen, never logging it, and stating the risk in the web console |
 | Harness question capture is the degraded path described by the plugin | Work mode cannot answer questions | Verify in `M4` first; if unavailable, fall back to an approval/question source that does work, or add a purpose-built bridge plugin |
 | Captive portal behaves differently across phone vendors | Users cannot provision | Always display the literal address and a QR to the page; support manual entry |
 | Largest free block too small to start the access point or TLS | Provisioning or direct mode fails only after other features are up | Defer audio initialization, release optional subsystems first, allocate hot buffers once, and log the largest block at every phase boundary |

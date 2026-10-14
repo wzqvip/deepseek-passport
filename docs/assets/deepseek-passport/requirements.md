@@ -77,6 +77,8 @@ omission is a documented tradeoff.
 | R-B7 | The design MUST target a median first-audio latency of at most 2.5 s on a healthy network for the cascade, and MUST display a distinct "thinking" state beyond 1.5 s. | |
 | R-B8 | Network or provider failures MUST produce a visible error state, a bounded retry policy, and no audio path deadlock. | |
 | R-B9 | The conversation MUST keep a bounded multi-turn history and MUST NOT grow internal RAM without limit. | |
+| R-B10 | The device MUST complete a full voice turn with no computer involved when provider credentials are configured on the device. | Product owner decision on `Q-4`: credentials live on the device, and plain-text storage is accepted |
+| R-B11 | Partial transcription MUST be displayed as it arrives when the selected speech-to-text back end provides it. | Product owner answer to `Q-5` |
 
 ### 3.3 R-C Work mode: desktop linkage
 
@@ -97,8 +99,8 @@ omission is a documented tradeoff.
 | R-D1 | The display MUST turn off after a configurable idle period and MUST return on any function-button press. | Owner brief: normally standby, and one button press wakes it |
 | R-D2 | Standby MUST still surface a new work-mode question within a configurable delay budget. | Conflicts with deep sleep; resolved by an explicit power mode |
 | R-D3 | The device MUST show battery level and warn on low battery with a distinguishable animation and chime. | |
-| R-D4 | The device MUST enter deep sleep after a configurable idle period when work-mode delivery is disabled, and MUST wake on any function button. | The key-wake guard behavior already exists upstream and must be preserved |
-| R-D5 | The device MUST offer at least two power profiles: a tethered profile that keeps the network and work-mode link alive, and a battery profile that sleeps and polls. | Explicit tradeoff, user-selectable |
+| R-D4 | The device MUST be able to enter deep sleep after a configurable idle period, and MUST wake on any function button. | Not the default: the product owner selected the always-connected profile, so deep sleep is opt-in. The key-wake guard behavior already exists upstream and must be preserved |
+| R-D5 | The device MUST offer at least two power profiles: an always-connected profile that keeps the network and work-mode link alive, and a battery profile that sleeps and polls. | The always-connected profile is the default, per the product owner's answer to `Q-8`; the battery profile is deferred |
 
 ### 3.5 R-E Wi-Fi provisioning
 
@@ -118,7 +120,7 @@ omission is a documented tradeoff.
 | R-F2 | The console MUST configure every provider: API key, base URL, model, and voice, for speech-to-text, the language model, and text-to-speech. | Owner brief: configure the API keys and similar settings |
 | R-F3 | The console MUST configure device preferences: pet name, persona, UI language, volume, brightness, idle timeout, chime policy, work-mode polling, and bridge address. | |
 | R-F4 | The console MUST offer self-tests: play a tone, speak a test phrase, run a chat completion, and test the bridge connection. | |
-| R-F5 | The console MUST support firmware update over the air and MUST show the running version. | |
+| R-F5 | The console MUST show the running firmware version. Over-the-air update is deferred. | Deferred by the product owner (`Q-6`): the current partition table has a single application slot, so OTA forces a layout change and a rollback policy |
 | R-F6 | The console MUST show device diagnostics: heap, largest free block, uptime, Wi-Fi RSSI, and recent error codes, without exposing secrets. | |
 | R-F7 | Secrets MUST be write-only from the console: stored values are shown as configured or not configured, never echoed back. | |
 
@@ -135,7 +137,7 @@ omission is a documented tradeoff.
 
 | ID | Requirement | Notes |
 | --- | --- | --- |
-| R-H1 | API keys and the bridge token MUST be stored in NVS, MUST NOT appear in source, and MUST NOT be logged. | |
+| R-H1 | API keys and the bridge token MUST be stored in NVS, MUST NOT appear in source, and MUST NOT be logged. | Plain-text NVS storage is accepted by the product owner (`Q-4`); the binding controls are that secrets never reach source control, logs, or a console response |
 | R-H2 | The bridge MUST authenticate the device with a pairing token and MUST bind to the local network only. | |
 | R-H3 | The repository MUST NOT contain credentials, device QR secrets, or unsanitized logs. | Enforced by the repository gate |
 
@@ -165,22 +167,34 @@ freezes.
 | A-5 | Wake-word detection is out of scope for the first release. The small no-PSRAM wake-word models do support this chip, but a permanently listening microphone costs flash, CPU on a single-core part, and idle power. The microphone is opened only when the user asks for it. Revisit if hands-free operation turns out to matter. |
 | A-6 | The first release supports Simplified Chinese and English only, in portrait orientation. |
 | A-7 | A single user and a single device profile are assumed. There is no multi-account model. |
-| A-8 | The device is charged over USB-C and is expected to be on a desk or in a pocket, so a tethered power profile is a normal operating mode rather than an exception. |
+| A-8 | The device is charged over USB-C and is expected to be on a desk or in a pocket, so an always-connected power profile is a normal operating mode rather than an exception. |
+| A-9 | Provider credentials may be stored on the device in plain text, and the device may call providers directly. The product owner accepted this on `Q-4`. Credentials still must never be logged, echoed back by the console, or committed. |
 
-## 6. Open questions
+## 6. Questions and answers
+
+The product owner answered six of the ten questions on 2026-10-13. Answered
+questions stay in this record as decisions, because their reasoning is part of
+the requirement.
+
+### 6.1 Answered
+
+| ID | Question | Answer |
+| --- | --- | --- |
+| Q-1 | Pet species, design direction, and name. | An original Q-version whale in the DeepSeek brand blue. The owner accepts a design produced from reference research or drawn by the project itself; see [the pet](architecture.md#62-the-pet) |
+| Q-4 | Device-direct provider calls. | **Approved.** Credentials are stored on the device and plain-text storage is accepted, so direct mode is a supported deployment rather than only a fallback |
+| Q-5 | Partial transcriptions on screen. | **Required.** The screen shows partial transcription when the selected back end provides it |
+| Q-6 | Over-the-air update in the first release. | **Deferred.** USB flashing is acceptable for now, so the partition table is not changed yet |
+| Q-8 | Default power profile. | **Always connected.** Power saving is deferred to a later release |
+| Q-10 | Long in-pocket recording. | **Deferred.** |
+
+### 6.2 Still open
 
 | ID | Question | Why it matters |
 | --- | --- | --- |
-| Q-1 | Confirm the pet's species, design direction, and on-screen name. | Drives every pixel asset and the whole UI |
 | Q-2 | Which text-to-speech back end and voice is the default? | Determines the default configuration, latency budget, and whether the device can decode PCM directly |
 | Q-3 | Is out-of-home work-mode delivery required, or is same-LAN only acceptable for the first release? | Same-LAN needs only a local bridge; remote delivery needs a relay service the project does not have yet |
-| Q-4 | Should the device be able to talk to cloud providers directly when the bridge is absent? | Direct mode puts API keys and TLS on the device and is the largest memory risk in the project |
-| Q-5 | Are streaming partial transcriptions required on screen, or is the final transcript enough? | Streaming is a much larger protocol and memory commitment |
-| Q-6 | Is over-the-air update required for the first release, or is USB flashing acceptable? | OTA costs a partition-layout change and a second application slot |
 | Q-7 | Should the passive NFC tag be written with a setup URL? | Cheap to do, but it is a product decision and a data-format commitment |
-| Q-8 | What is the default power profile, and what standby-delivery delay is acceptable in the battery profile? | Directly sets idle current and the "no missed question" guarantee |
 | Q-9 | Should the pet persona be a fixed system prompt, or user-editable from the web console? | Affects prompt storage and the configuration surface |
-| Q-10 | Is a one-hour, in-pocket voice-memo or long-recording feature wanted later? | Would change the storage design now |
 
 ## 7. Acceptance summary
 

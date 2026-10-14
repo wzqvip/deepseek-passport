@@ -13,7 +13,7 @@ the identifiers in [requirements.md](requirements.md); design detail is in
 
 | Milestone | Goal | Status |
 | --- | --- | --- |
-| `M0` | Requirements, architecture, and decisions recorded | **In progress** — documents written on 2026-10-13; awaiting product-owner answers to open questions |
+| `M0` | Requirements, architecture, and decisions recorded | **Complete** — documents written and the product owner answered `Q-1`, `Q-4`, `Q-5`, `Q-6`, `Q-8`, and `Q-10` on 2026-10-13. `Q-2`, `Q-3`, `Q-7`, and `Q-9` stay open and block nothing |
 | `M1` | Prove the memory and audio budget on hardware | Not started |
 | `M2` | Bridge, configuration store, network, and a text-only conversation | Not started |
 | `M3` | Voice in and voice out | Not started |
@@ -51,8 +51,10 @@ design, and it is deliberately first.
 - A measurement report: boot, after Wi-Fi, after access point start, after a
   sustained PCM capture, after a sustained PCM playback, and after ten
   screen enter/exit cycles.
-- A decision on the LVGL pool size, the capture and playback ring sizes, and
-  whether device-direct provider calls (`Q-4`) are feasible at all.
+- A decision on the LVGL pool size, the capture and playback ring sizes, and what
+  the direct-mode provider path costs in RAM — measured with a live TLS session,
+  not estimated.
+- An idle-current measurement with the always-connected profile selected (`Q-8`).
 - An audio loopback check: microphone to speaker through the real codec path,
   confirming the mute-during-playback rule is enforceable.
 
@@ -98,6 +100,9 @@ the configuration survives a power cycle.
 - The enforced microphone mute during playback, with a host test for the state
   machine and an on-device check for echo.
 - A latency instrumentation path that records each segment of the turn.
+- The direct-mode path: the same three stages performed by the device against
+  provider endpoints, with strict serialization of TLS sessions and a size cap on
+  every response. This is in scope because the product owner approved it (`Q-4`).
 
 **Exit criteria:** requirement `R-B7` is measured, not asserted; the reply is
 audible and intelligible; the device does not transcribe its own voice; playback
@@ -140,8 +145,8 @@ reachable from the LAN in any configuration used by this milestone.
   maintenance actions.
 - The console asset pipeline: one self-contained page, gzipped at build time,
   embedded in flash.
-- Firmware update, if `Q-6` is answered yes, including the partition table
-  change and a rollback decision.
+- Version reporting in the console. Firmware update over the air is deferred
+  (`Q-6`), so the partition table is not changed in this milestone.
 
 **Exit criteria:** a factory-fresh device is provisioned from a phone without any
 companion application; the console configures every provider and runs a
@@ -176,8 +181,9 @@ is reused.
 
 - Idle screen-off and wake on any function button, preserving the existing
   key-wake guard behavior.
-- The tethered and battery power profiles, with the standby-delivery delay stated
-  in the console.
+- The always-connected profile as the default, with its idle current measured and
+  stated in the console. The battery profile and deep sleep are deferred (`Q-8`);
+  the upstream key-wake guard behavior is kept intact for them.
 - Deep-sleep entry conditions and idle-current measurements per profile.
 - Battery indication and a low-battery warning animation.
 - Release packaging: a merged image, version reporting, and the completion

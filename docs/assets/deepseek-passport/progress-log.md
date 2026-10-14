@@ -19,6 +19,121 @@ Rules for this log:
 
 ---
 
+## 2026-10-13 (later) — Session 2: product owner answers and the pet design
+
+**Milestone:** `M0` complete.
+
+### Answers received
+
+Six of the ten questions were answered. The answers are recorded as decisions in
+[requirements.md](requirements.md#61-answered); what follows is their effect on
+the design.
+
+| ID | Answer | Effect |
+| --- | --- | --- |
+| `Q-1` | An original Q-version whale in the brand blue; the project may draw it | The pet design and its generator were produced (below) |
+| `Q-4` | Provider credentials live on the device; plain text is accepted | Device-direct becomes a supported deployment rather than a fallback, which puts TLS on the critical path. `M1` must now measure the largest free block with a live TLS session before any provider code is written |
+| `Q-5` | Partial transcription is required on screen | A streaming transcription service becomes the baseline and batch transcription the cost-saving alternative |
+| `Q-6` | Over-the-air update is deferred | The partition table stays as it is: one factory application, no second slot |
+| `Q-8` | The always-connected profile is the default | Deep sleep becomes opt-in; idle current is now a number the project owes the user, measured in `M1` |
+| `Q-10` | Long in-pocket recording is deferred | The storage design is unchanged |
+
+### Decisions
+
+| ID | Decision | Reason |
+| --- | --- | --- |
+| D-13 | The pet is an original Q-version whale drawn by this project, not a copy of the DeepSeek logo | The owner asked for the brand blue and a Q-style character while allowing the project to draw it; keeping the artwork original avoids a trademark problem and gives the project a character it owns |
+| D-14 | Device-direct provider calls are supported, with provider credentials stored on the device in plain text | Product owner answer to `Q-4`. The consequence is accepted explicitly: a lost device is a lost key |
+| D-15 | A streaming transcription back end is the default; batch transcription remains available | Product owner answer to `Q-5` |
+| D-16 | Over-the-air update is deferred and the partition table is left alone | Product owner answer to `Q-6` |
+| D-17 | The always-connected power profile is the default; the battery profile and deep sleep are deferred, and the upstream key-wake guard is preserved for them | Product owner answer to `Q-8` |
+| D-18 | The pet is generated procedurally from a checked-in script rather than hand-drawn pixel by pixel | Redrawing a 32 × 32 character by hand for every expression is slow and unreviewable; a generator makes the geometry, palette, and frame list reviewable and reproducible |
+
+### The pet design
+
+A first-pass design exists, produced by a new generator.
+
+- The character is a 32 × 32 logical whale facing right, written at 2× as 64 × 64
+  sprites, with eleven opaque colors anchored on the brand blue `#4D6BFE`.
+- Eleven frames cover idle (a two-frame breathing bob), blink, curious,
+  listening, thinking, working, speaking, happy, sleeping, and distressed.
+- Each frame is 12,288 B as RGB565A8; eleven frames total 132 KiB of flash, which
+  is irrelevant against 8 MB. Frames share identical bounds, so animation swaps
+  one image source and never changes the resident object count.
+- The generator uses the Python standard library only, so it runs anywhere and
+  produces byte-identical output.
+- The design is awaiting product-owner sign-off, and redrawing is cheap: the
+  geometry constants and the palette are the whole surface area.
+
+Artwork and generator: [`art/`](art/README.md).
+
+### Reference research
+
+The design was checked against published references before it was drawn, and it
+copies none of them.
+
+| Finding | Source | Effect |
+| --- | --- | --- |
+| The official brand colour is `#4D6BFE` | DeepSeek's own organisation publishes a colour swatch whose only fill is that value | The body colour is exactly it, so the palette is verified rather than estimated |
+| DeepSeek's mark is a whale, and its eye is lost at small sizes | Press coverage of the logo | The pet's eyes are deliberately oversized and high-contrast |
+| No official pixel-art mascot or Q-version character exists | Reference search | The project duplicates nothing, and there was nothing to reuse |
+| The logo whale faces left with its flukes raised at the upper right | A rendered copy of the official logo, inspected directly | See the orientation decision below |
+| DeepSeek's own harness uses an animated whale tail as its "agent is working" indicator | The harness client sources | The pet's `working` frame raises the tail instead of inventing a new signal |
+| The companion desktop pet's artwork is not reusable | That project's own notice: no commercial use, mandatory attribution, and its art is soft-shaded animation rather than pixel art | Confirms that original artwork is required; nothing from it was copied |
+
+Orientation: the pet faces right rather than matching the logo's left-facing pose.
+Matching the official pose would move the character toward the part most protected
+by DeepSeek's brand rules, and facing right points the pet into the screen
+content. It is a single constant to change if the owner prefers the logo pose.
+
+The official silhouette was not traced or modified, no wordmark is used, and this
+project is not affiliated with DeepSeek.
+
+### Documents updated
+
+- `requirements.md`: two new requirements (`R-B10`, `R-B11`), four modified
+  requirements, one new assumption (`A-9`), and the question table split into
+  answered and still open.
+- `architecture.md`: the deployment-mode section now describes both modes as
+  supported; a standby-default subsection; TLS moved onto the critical path in
+  the memory budget; the security table states the accepted plain-text risk; the
+  risk table gained the credential-loss row; and the pet section now carries the
+  concrete design.
+- `voice-backends.md`: the decision record reflects device-direct support, and the
+  transcription selection changed to a streaming baseline.
+- `roadmap.md`: `M0` marked complete; `M1` now includes a live-TLS memory
+  measurement and an idle-current measurement; `M3` includes the direct-mode path;
+  `M5` and `M7` reflect the deferred update and battery work.
+- `art/`: new — the sprite generator, eleven frames, and a README recording the
+  design, the palette, the reference research, and the licence position.
+
+### Still open
+
+`Q-2` (default voice), `Q-3` (out-of-home delivery), `Q-7` (writing a setup URL
+to the NFC tag), and `Q-9` (whether the persona is user-editable). None blocks
+`M1`.
+
+### Next steps
+
+1. Start `M1`: the measurement-only firmware. It now answers two questions that
+   can change the design: the largest free block with a live TLS session, and the
+   idle current with the network held open.
+2. Audio loopback through the real codec path, confirming the mute-during-playback
+   rule is enforceable in code.
+3. Collect product-owner feedback on the pet art before `M6` depends on it.
+
+### Validation run for this session
+
+| Check | Result |
+| --- | --- |
+| Repository checks (`tools/check_repo.py`) | **PASS** — all text files scanned; every English/Chinese pair present and structurally aligned; links, secret patterns, and root-Markdown rules clean |
+| Host tests | **PASS, unchanged** — no C source, Python source, or build configuration was touched, so the suite was not re-run |
+| Firmware build | **NOT RUN** — no ESP-IDF environment is activated, and no firmware source changed |
+| Device tests | **NOT RUN** — no board is connected |
+| Unverified | The same items as Session 1, plus the pet design, which is a proposal awaiting the owner's sign-off |
+
+---
+
 ## 2026-10-13 — Session 1: reconnaissance, research, and the design record
 
 **Milestone:** `M0` in progress.
