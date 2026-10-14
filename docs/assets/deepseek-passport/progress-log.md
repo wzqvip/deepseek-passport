@@ -19,6 +19,64 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 19: the spoken-turn rules, settled before any provider is chosen
+
+**Status:** host-tested and building; **no device verification**, because the device's USB
+console is not functioning (below). Nothing here claims to have run on hardware.
+
+### Why this and not something on the device
+
+The console reported `A device attached to the system is not functioning` when written to. The
+port opens, no stuck helper holds it, and the same device previously recovered only after a
+physical power cycle. That is not something to fix from here, so this session took the part of
+the voice milestone that needs no radio, no provider, and no microphone: **the rules of a
+spoken turn**.
+
+Those rules are what decide whether a voice interface feels broken, and they are the hardest
+part to test once they are tangled up with an audio driver.
+
+### What was built
+
+`passport_voice` is a pure state machine over idle, listening, transcribing, thinking,
+speaking, and failed, driven by button and stage events and answering with one action:
+open the microphone, transcribe, ask the model, speak, report a failure, return to idle.
+
+Four decisions are encoded rather than left to whoever wires it up:
+
+- **The microphone is never open while the device is speaking.** This board cannot do acoustic
+  echo cancellation, so a microphone left open during playback records the device's own voice.
+  The machine closes it on leaving listening *and* again before speaking, and the host test
+  walks **every event through every state** and asserts that the microphone is only ever open
+  in the listening state. A future edit that opens it to "listen for barge-in" now fails a test
+  rather than producing a device that argues with itself.
+- **A press while an answer is being spoken is refused, not queued.** Cutting in on a
+  half-duplex device has to mean cancelling the answer first, and that decision belongs to the
+  caller; silently starting a turn underneath the playback is how a device ends up recording
+  its own sentence.
+- **A failure at any stage is recoverable without a reboot**: a reset clears it, and so does
+  pressing the button again.
+- **A silent room is not a failure.** The caller reports an empty transcript with a reset, so
+  saying nothing returns quietly to idle instead of showing an error.
+
+The provider calls stay outside the machine: it returns an action, and the caller performs it.
+
+### Verified
+
+```text
+host tests:  8 of 8 PASS (the new voice test is one of them)
+build:       PASS, ESP-IDF 5.5.3, image 0x224090, 73% of the partition free
+device:      NOT RUN
+```
+
+### Still pending from the previous session
+
+1. `prov qr` before `prov start` should report a 40-byte payload.
+2. `font shot qr dark` should allocate and print the code.
+
+Both need the device's console to work again, which needs a power cycle.
+
+---
+
 ## 2026-10-14 — Session 18: reserved early, derived on demand — built and flashed, not yet device-verified
 
 **Status:** build PASS, flashed to the device. **Device verification did not happen**, for a
