@@ -22,6 +22,7 @@
 | [语音后端](deepseek-passport/voice-backends.md) | 语音流水线决策背后的提供商调研，以及被否决的设计 |
 | [路线图](deepseek-passport/roadmap.md) | 里程碑、退出标准和验证计划 |
 | [进度日志](deepseek-passport/progress-log.md) | 带日期的决策、证据、验证状态和待决事项 |
+| [串口控制台](deepseek-passport/serial-cli.zh_CN.md) | 串口控制台：屏幕元素与控制台命令如何保持一一对应、命令列表，以及它的两条契约 |
 
 ## 相关
 

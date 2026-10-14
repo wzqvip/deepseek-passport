@@ -29,6 +29,7 @@ proposed back upstream.
 | [Voice back ends](deepseek-passport/voice-backends.md) | The provider survey behind the voice pipeline decision, and the rejected designs |
 | [Roadmap](deepseek-passport/roadmap.md) | Milestones, exit criteria, and the validation plan |
 | [Progress log](deepseek-passport/progress-log.md) | Dated decisions, evidence, verification status, and open items |
+| [Serial console](deepseek-passport/serial-cli.md) | The serial console: how screen elements and console commands stay in correspondence, the command list, and its contracts |
 
 ## Related
 
