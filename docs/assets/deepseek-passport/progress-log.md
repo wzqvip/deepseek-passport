@@ -19,6 +19,57 @@ Rules for this log:
 
 ---
 
+## 2026-10-15 — Session 39: the bridge exists, and its endpoints were verified one at a time
+
+The owner asked which speech services to use and where to find them, and to go and look. Both, and then
+the half of the system that was still a document: `tools/passport_bridge.py`.
+
+### The recommendation
+
+**SiliconFlow** for both directions, because one key and one OpenAI-compatible shape cover speech-to-text
+and text-to-speech, `/v1/audio/speech` can return raw PCM, and that means no audio decoder anywhere in the
+path — which is the same reason the device sends PCM in the first place. Alibaba Model Studio is the
+second choice for Mandarin quality, at the cost of two different API shapes, which the bridge handles as a
+provider mode. The reasoning and the links live in
+[`voice-backends.md`](voice-backends.md#which-providers-to-use-right-now) rather than here.
+
+Prices and model identifiers were deliberately not copied into the repository: they change, and a number
+in a document that nobody re-checks is worse than a link.
+
+### The bridge, and what was verified
+
+[`tools/passport_bridge.py`](../../../tools/passport_bridge.py) implements the protocol in
+[`bridge-protocol.md`](bridge-protocol.md) with no dependencies beyond the standard library, and a `--fake`
+provider that answers without a key so the device side can be checked without spending anything. Verified
+on the device, endpoint by endpoint:
+
+```text
+POST /voice      <- 92160 bytes, 2.9 s of audio, streamed while recording
+GET  /speak      <- "hello from the bridge", and the device played what came back:
+                    last="spoke 31 KB (16000 samples)" — one second at 16 kHz, exactly the tone sent
+GET  /work-status <- the work screen's document, from the host and from the device's polling
+```
+
+The transcription itself returned the fake provider's canned text, and the `/voice/transcript` polling is
+the one leg not yet seen against this bridge: a real turn reached the silence gate before it, which is the
+next point.
+
+### What a real turn still needs
+
+A person. The device behaved exactly as designed when I drove a push-to-talk turn without speaking into it:
+
+```text
+last="90 KB, peak 369 below gate 942: discarded"
+```
+
+It streamed the recording while capturing it — which is why the bridge received 2.9 seconds of room tone —
+and then, having measured a peak well below twice the room's own floor, threw the turn away instead of
+sending a question it knew was empty. That is the correct behaviour and it is also the limit of what can be
+verified without a human: the speech level of a person at this microphone is not something a test can
+produce.
+
+---
+
 ## 2026-10-15 — Session 38: the work screen stopped dragging the owner back, and the page can be checked from the device
 
 Two reports from the owner. One was my mess; the other was a real bug, and the first report turned out to

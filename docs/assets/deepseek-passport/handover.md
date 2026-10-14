@@ -176,6 +176,8 @@ one is still open.
 | [`main/`](../../../main) | The application, one module per concern |
 | [`components/bsp/`](../../../components/bsp) | The board support package, upstream and reused |
 | [`tools/`](../../../tools) | The gate, the fixture generator, the stand-in bridge, the QR checker, and the console driver |
+| [`tools/passport_bridge.py`](../../../tools/passport_bridge.py) | **The companion bridge**: speech-to-text, the spoken answer, and the work screen's document. `--fake` needs no key, SiliconFlow is the default, DashScope is the Mandarin-quality alternative |
+| [`tools/mock_bridge.py`](../../../tools/mock_bridge.py) | The minimal stand-in used to verify the device's half of the protocol before the real bridge existed |
 | [`tools/passport-console.ps1`](../../../tools/passport-console.ps1) | Drives the device's serial console: waits for the prompt instead of sleeping, so a reading is repeatable rather than intermittent |
 
 The progress log is the honest record. It contains the mistakes as well as the results — three wrong

@@ -35,7 +35,33 @@ bridge: speech-to-text -> DeepSeek streaming -> text-to-speech -> PCM16
 device: PCM16 -> ring buffer -> I2S -> speaker        (microphone muted)
 ```
 
-Reasons:
+### Which providers to use right now
+
+The bridge is written ([`tools/passport_bridge.py`](../../../tools/passport_bridge.py)) and takes the
+provider from its flags, so this is a choice of one key rather than one firmware release:
+
+| Step | First choice | Why | Where |
+| --- | --- | --- | --- |
+| Speech to text | **SiliconFlow** `FunAudioLLM/SenseVoiceSmall` | OpenAI-compatible `/v1/audio/transcriptions`, good Mandarin, one key, reachable from the mainland | [docs](https://docs.siliconflow.cn/docs/api/audio-transcriptions-post) |
+| Text to speech | **SiliconFlow** `FunAudioLLM/CosyVoice2-0.5B` | The **same key and the same OpenAI-compatible shape** (`/v1/audio/speech`, `response_format: pcm`), so no decoder is needed anywhere | [models](https://siliconflow.cn/models?q=CosyVoice2-0.5B) |
+| Language model | **DeepSeek** | Already on the device and verified; nothing to change | [platform](https://platform.deepseek.com/) |
+
+One service for both directions is the point: the device knows one `bridge_url`, and one key covers the
+two directions that need one, which is the difference between a working device this evening and a
+half-configured one.
+
+Second choice, when Chinese quality matters more than effort: **Alibaba Model Studio** —
+[qwen3-asr-flash](https://help.aliyun.com/zh/model-studio/qwen3-asr-flash) transcribes on the
+OpenAI-compatible path, while [qwen-tts](https://www.alibabacloud.com/help/zh/model-studio/qwen-tts-api)
+speaks on its native path; the bridge has a `--provider dashscope` mode for exactly that asymmetry.
+**Volcengine Doubao** has the best-regarded Mandarin voices but needs multi-field credentials, which is
+why it is not the default.
+
+Prices and model identifiers change often. The defaults in the bridge are a starting point; check the
+provider's own page before paying for anything. This document deliberately does not quote per-character
+prices it cannot keep current.
+
+Reasons for the cascade itself:
 
 1. It removes the largest RAM risk (an Opus codec) and the second largest (an MP3
    decoder plus resampling). Both ends of the wire are raw PCM.

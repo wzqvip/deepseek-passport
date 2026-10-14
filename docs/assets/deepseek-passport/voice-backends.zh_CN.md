@@ -28,6 +28,29 @@ bridge: speech-to-text -> DeepSeek streaming -> text-to-speech -> PCM16
 device: PCM16 -> ring buffer -> I2S -> speaker        (microphone muted)
 ```
 
+### 现在该用哪些服务
+
+中继已经写好（[`tools/passport_bridge.py`](../../../tools/passport_bridge.py)），provider 由命令行参数决定，
+所以这是**选一个密钥**的问题，而不是**发一次固件**的问题：
+
+| 环节 | 首选 | 为什么 | 在哪里 |
+| --- | --- | --- | --- |
+| 语音识别 | **硅基流动** `FunAudioLLM/SenseVoiceSmall` | OpenAI 兼容的 `/v1/audio/transcriptions`，中文好，一个密钥，国内可直连 | [文档](https://docs.siliconflow.cn/docs/api/audio-transcriptions-post) |
+| 语音合成 | **硅基流动** `FunAudioLLM/CosyVoice2-0.5B` | **同一个密钥、同一种 OpenAI 兼容形态**（`/v1/audio/speech`，`response_format: pcm`），所以**任何地方都不需要解码器** | [模型](https://siliconflow.cn/models?q=CosyVoice2-0.5B) |
+| 对话模型 | **DeepSeek** | 设备上已经在用并已验证，无需改动 | [平台](https://platform.deepseek.com/) |
+
+**两个方向用同一个服务，关键就在这里**：设备只知道一个 `bridge_url`，而一个密钥就覆盖了需要密钥的
+两个方向——这是"今晚就能用的设备"与"配了一半的设备"之间的差别。
+
+当**中文质量比省事更重要**时，次选是**阿里云百炼**——
+[qwen3-asr-flash](https://help.aliyun.com/zh/model-studio/qwen3-asr-flash) 在 OpenAI 兼容路径上做识别，
+而 [qwen-tts](https://www.alibabacloud.com/help/zh/model-studio/qwen-tts-api) 走它自己的原生路径做合成；
+中继的 `--provider dashscope` 模式正是为这种不对称写的。**火山豆包**的中文音色口碑最好，但它需要
+多字段鉴权，所以不是默认项。
+
+价格与模型标识变动频繁。中继里的默认值只是起点；**付费之前请点开服务商自己的页面核对**。本文档刻意
+**不引用**那些它无法保持准确的按字符价格。
+
 理由：
 
 1. 它消除了最大的 RAM 风险（Opus 编解码器）和第二大风险（MP3 解码器加重采样）。链路两端都是原始 PCM。

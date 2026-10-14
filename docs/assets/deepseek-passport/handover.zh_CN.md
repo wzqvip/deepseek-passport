@@ -155,6 +155,8 @@ python tools/mock_bridge.py --port 8080 --scenario running
 | [`main/`](../../../main) | 应用本体,一个关注点一个模块 |
 | [`components/bsp/`](../../../components/bsp) | 板级支持包,上游的,被复用 |
 | [`tools/`](../../../tools) | 门禁、夹具生成器、替身桥接服务、二维码检查器，以及控制台驱动 |
+| [`tools/passport_bridge.py`](../../../tools/passport_bridge.py) | **配套中继**：语音识别、朗读回答、以及工作屏的那份文档。`--fake` 不需要密钥，默认硅基流动，阿里云百炼是中文质量更好的次选 |
+| [`tools/mock_bridge.py`](../../../tools/mock_bridge.py) | 在真正的中继存在之前，用来验证设备侧协议的最小替身 |
 | [`tools/passport-console.ps1`](../../../tools/passport-console.ps1) | 驱动设备的串口控制台：**等待提示符而不是靠 sleep**，所以读数可重复而不是时好时坏 |
 
 **进度日志才是诚实的记录。** 它既包含结果,也包含错误——**三处错误诊断被撤回**、**一次被我自己发出去又
