@@ -17,6 +17,45 @@
 
 ---
 
+## 2026-10-14 —— 第 6 次会话：配置存储
+
+**里程碑：** 语音、工作模式、Web 后台三个里程碑都依赖的设置与凭据层。
+
+### 已构建的内容
+
+`passport_config` 是配置结构与访问器，纯 C，并带宿主测试：**一张字段表**同时驱动今天
+的控制台和日后的 Web 后台；默认值可重复应用；数值按边界钳制；过长字符串被拒绝而不是
+截断；**标记为 secret 的字段永远不会被渲染**——`passport_cfg_format()` 对它只返回
+"(set)" 或 "(empty)"，因此凭据不可能从日志、转录文本或控制台列表里泄露出去。
+
+`passport_config_store` 把整个结构作为一个 NVS blob、一个键持久化，并把"大小或版本不符"
+当作"改用默认值"，而不是把旧字节重新解释成新字段。NVS 初始化失败**绝不触发擦除**：设备
+如实报告，然后用默认值继续运行。
+
+`main.c` 的启动流程现在包含 NVS 与配置，并且**存下来的偏好真正生效**：亮度作用于背光，
+音量在编解码器打开时被采用，替换了原先写死的常量。
+
+控制台命令：`config list`、`config get`、`config set`、`config save`、`config reset`。
+
+### 真机验证
+
+```text
+config list           默认值;secret 显示为 (empty) [secret];
+                      llm_base_url https://api.deepseek.com
+config set llm_api_key sk-hidden-42    ->  = (set) [secret]
+config set llm_model deepseek-chat
+config set volume 35
+config save           ESP_OK
+reboot
+config list           llm_api_key (set)、llm_model deepseek-chat、volume 35
+config get llm_api_key ->  (set)   (密钥永不打印)
+```
+
+跨重启持久化成立，且存下的凭据永不被渲染。密钥规则是**断言出来的，不是靠眼看**：滤掉
+控制台对我所输入命令的回显后，`sk-hidden-42` 在设备自身的输出里一次都没有出现。
+
+---
+
 ## 2026-10-14 —— 第 5 次会话：音频通路，以及实测带来的两个发现
 
 **里程碑：** 麦克风与扬声器通路已进入应用并在真机验证；M1 验收标准中的音频部分完成一半。

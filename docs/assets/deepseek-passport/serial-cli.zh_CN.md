@@ -35,6 +35,7 @@ lv_obj_set_name(s_card, "audio");   /* the card labelled "Audio" */
 | `ui screen` | 活动屏幕名称、尺寸和子对象数量 |
 | `reboot` | 重启设备 |
 | `audio status\|tone [ms]\|loopback [ms]\|mute-check` | 当前哪个子系统占用音频通路；播放 1 kHz 单音；录一段再放回并给出电平读数；验证播放持有通路期间录音会被拒绝 |
+| `config list\|get <字段>\|set <字段> <值>\|save\|reset` | 配置：列出全部字段（密钥只显示已设置/为空）、在内存中改一个字段、持久化、恢复默认 |
 | `help` | ESP-IDF 控制台自带的命令列表 |
 
 ## 针对它编写脚本前值得了解的两条契约

@@ -14,8 +14,10 @@
 #include "bsp_battery.h"
 #include "bsp_pins.h"      // 错误日志里要打印 BSP_LCD_* 引脚号
 #include "key_guard.h"
+#include "nvs_flash.h"
 #include "passport_app.h"
 #include "passport_cli.h"
+#include "passport_config_store.h"
 #include "passport_pet_assets.h"
 #include "lvgl.h"
 #include "esp_log.h"
@@ -110,6 +112,20 @@ void app_main(void) {
     bsp_i2c_init();
     bsp_i2c_scan();
 
+    // Configuration lives in NVS. A failure here does not stop the device, and it
+    // never triggers an erase: falling back to defaults and saying so is better
+    // than destroying whatever else the partition holds.
+    const esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGE(TAG, "NVS 需要格式化(%s);不自动擦除,本次使用默认配置", esp_err_to_name(nvs_err));
+    } else if (nvs_err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS 初始化失败: %s", esp_err_to_name(nvs_err));
+    }
+    bool cfg_loaded = false;
+    if (passport_config_store_init(&cfg_loaded) != ESP_OK) {
+        ESP_LOGW(TAG, "配置存储不可用;本次运行使用默认配置");
+    }
+
     // 屏幕是应用唯一的界面载体,失败就没有可用的产品形态——打清楚日志后退出。
     if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) {
         ESP_LOGE(TAG, "显示/LVGL 初始化失败,应用无法继续。"
@@ -118,6 +134,9 @@ void app_main(void) {
         return;
     }
     bsp_display_backlight(100);
+    // Then let the stored preference win. 0 means off, which is why the console
+    // command that sets it is documented as the way back.
+    bsp_display_backlight(passport_config_current()->brightness);
 
     // 其余外设单项失败不阻塞:应用照常启动,只是相关功能不可用。
     const esp_err_t input_err = input_dispatch_init();
@@ -153,8 +172,8 @@ void app_main(void) {
         ESP_LOGW(TAG, "串口控制台不可用;设备其余功能不受影响");
     }
 
-    ESP_LOGI(TAG, "就绪:Display=1 Button=%d Audio=%d Battery=%d App=%d",
-             button_err == ESP_OK, audio_ok, battery_ok, app_err == ESP_OK);
+    ESP_LOGI(TAG, "就绪:Display=1 Button=%d Audio=%d Battery=%d App=%d Cfg=%d",
+             button_err == ESP_OK, audio_ok, battery_ok, app_err == ESP_OK, cfg_loaded);
 
     // Forced reference: the pet sprites live in flash and LVGL draws them, so
     // nothing links them until a screen uses one. Touching the descriptor and its

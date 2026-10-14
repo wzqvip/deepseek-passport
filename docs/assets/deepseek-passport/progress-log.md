@@ -19,6 +19,52 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 6: the configuration store
+
+**Milestone:** the settings and credential layer that the voice, work-mode, and web
+console milestones all depend on.
+
+### What was built
+
+`passport_config` is the schema and its accessors as pure C, with a host test: one
+field table drives the console today and the web console later; defaults are applied
+and idempotent; numeric values are clamped to their bounds; an over-long string is
+refused rather than truncated; and **a field marked secret can never be rendered**.
+`passport_cfg_format()` returns "(set)" or "(empty)" for it, so a credential cannot
+leak through a log line, a transcript, or the console listing.
+
+`passport_config_store` persists the whole struct as one NVS blob under one key and
+treats a size or version mismatch as "use the defaults" rather than reinterpreting
+old bytes as new fields. An NVS initialization failure never triggers an erase: the
+device reports it and runs on defaults.
+
+Startup in `main.c` now initializes NVS and the configuration, and the stored
+preferences take effect — brightness is applied to the backlight and the stored
+volume is used when the codec opens, replacing the compiled-in constants.
+
+Console commands: `config list`, `config get`, `config set`, `config save`, and
+`config reset`.
+
+### Verified on the device
+
+```text
+config list           defaults; secrets shown as (empty) [secret];
+                      llm_base_url https://api.deepseek.com
+config set llm_api_key sk-hidden-42    ->  = (set) [secret]
+config set llm_model deepseek-chat
+config set volume 35
+config save           ESP_OK
+reboot
+config list           llm_api_key (set), llm_model deepseek-chat, volume 35
+config get llm_api_key ->  (set)   (a secret is never printed)
+```
+
+Persistence across a reboot works, and a stored credential is never rendered. The
+secret rule is **asserted, not eyeballed**: after filtering out the console's echo
+of the command I typed, `sk-hidden-42` appears nowhere in the device's own output.
+
+---
+
 ## 2026-10-14 — Session 5: the audio path, and two findings from measuring it
 
 **Milestone:** the microphone and speaker path is in the application and verified;

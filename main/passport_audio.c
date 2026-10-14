@@ -5,6 +5,7 @@
 
 #include "bsp_audio.h"
 #include "esp_log.h"
+#include "passport_config_store.h"
 #include "passport_metrics_math.h"
 
 static const char *TAG = "passport_audio";
@@ -41,7 +42,9 @@ esp_err_t passport_audio_open(void)
         ESP_LOGE(TAG, "采样格式设置失败: %s", esp_err_to_name(err));
         return err;
     }
-    bsp_audio_set_volume(VOLUME_PERCENT);
+    // The stored preference wins over the compiled-in default, so a volume set from
+    // the console actually takes effect on the next codec open.
+    bsp_audio_set_volume(passport_config_current()->volume);
     s_opened = true;
     s_needs_warmup = true;
     return ESP_OK;

@@ -45,6 +45,7 @@ Requires `CONFIG_LV_USE_OBJ_NAME=y` (set in `sdkconfig.defaults`).
 | `ui screen` | Active screen name, size, and child count |
 | `reboot` | Restart the device |
 | `audio status\|tone [ms]\|loopback [ms]\|mute-check` | Which subsystem holds the audio path; play a 1 kHz tone; record and play it back with a level reading; prove that a capture is refused while playback holds the path |
+| `config list\|get <field>\|set <field> <value>\|save\|reset` | The configuration: every field with secrets shown as set or empty, change a field in RAM, persist it, or restore defaults |
 | `help` | The ESP-IDF console's own command list |
 
 ## Two contracts worth knowing before scripting against it

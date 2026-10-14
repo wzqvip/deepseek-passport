@@ -27,6 +27,8 @@
 #include "esp_timer.h"
 #include "lvgl.h"
 #include "passport_audio.h"
+#include "passport_config.h"
+#include "passport_config_store.h"
 
 #define CLI_NAME_MAX 96
 #define CLI_TAP_ANCESTOR_MAX 6
@@ -509,6 +511,88 @@ static int cmd_audio(int argc, char **argv)
     return 1;
 }
 
+static int cmd_config(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("usage: config <list|get <field>|set <field> <value>|save|reset>\n");
+        printf("  list             every field, with secrets shown as set or empty\n");
+        printf("  get <field>      one field\n");
+        printf("  set <field> <v>  change a field in RAM; \"\" clears a string\n");
+        printf("  save             persist the live configuration\n");
+        printf("  reset            restore defaults and erase the stored copy\n");
+        return 1;
+    }
+
+    const char *sub = argv[1];
+
+    if (strcmp(sub, "list") == 0) {
+        char value[128];
+        printf("configuration: %u bytes, stored=%s\n",
+               (unsigned)sizeof(passport_config_t),
+               passport_config_dirty() ? "no (unsaved changes)" : "yes");
+        for (int i = 0; i < passport_cfg_field_count(); i++) {
+            const passport_cfg_field_t *f = passport_cfg_field(i);
+            passport_cfg_format(passport_config_current(), f, value, sizeof(value));
+            printf("  %-18s %s%s\n", f->name, value, f->secret ? "   [secret]" : "");
+        }
+        return 0;
+    }
+
+    if (strcmp(sub, "get") == 0) {
+        if (argc < 3) {
+            printf("usage: config get <field>\n");
+            return 1;
+        }
+        const passport_cfg_field_t *f = passport_cfg_find(argv[2]);
+        if (f == NULL) {
+            printf("config get: unknown field \"%s\" (try \"config list\")\n", argv[2]);
+            return 1;
+        }
+        char value[128];
+        passport_cfg_format(passport_config_current(), f, value, sizeof(value));
+        printf("%s = %s%s\n", f->name, value,
+               f->secret ? "   (a secret is never printed)" : "");
+        return 0;
+    }
+
+    if (strcmp(sub, "set") == 0) {
+        if (argc < 4) {
+            printf("usage: config set <field> <value>   (use \"\" to clear a string)\n");
+            return 1;
+        }
+        const passport_cfg_field_t *f = passport_cfg_find(argv[2]);
+        if (f == NULL) {
+            printf("config set: unknown field \"%s\" (try \"config list\")\n", argv[2]);
+            return 1;
+        }
+        const passport_cfg_status_t st = passport_cfg_apply(passport_config_mutable(), f, argv[3]);
+        if (st != PASSPORT_CFG_OK) {
+            printf("config set: %s: %s\n", f->name, passport_cfg_status_name(st));
+            return 1;
+        }
+        char value[128];
+        passport_cfg_format(passport_config_current(), f, value, sizeof(value));
+        printf("config set: %s = %s%s\n", f->name, value, f->secret ? "   [secret]" : "");
+        printf("  not persisted yet: run \"config save\"\n");
+        return 0;
+    }
+
+    if (strcmp(sub, "save") == 0) {
+        const esp_err_t err = passport_config_store_save();
+        printf("config save: %s\n", esp_err_to_name(err));
+        return (err == ESP_OK) ? 0 : 1;
+    }
+
+    if (strcmp(sub, "reset") == 0) {
+        const esp_err_t err = passport_config_store_reset();
+        printf("config reset: %s\n", esp_err_to_name(err));
+        return (err == ESP_OK) ? 0 : 1;
+    }
+
+    printf("config: unknown subcommand \"%s\"\n", sub);
+    return 1;
+}
+
 static int cmd_ui(int argc, char **argv)
 {
     if (argc < 2) {
@@ -583,6 +667,7 @@ esp_err_t passport_cli_start(void)
     register_command("ver", "Print the application and ESP-IDF build identity", &cmd_ver);
     register_command("app", "Print uptime, battery, keypad voltage, and memory", &cmd_app);
     register_command("mem", "Print heap, largest free block, and the LVGL pool", &cmd_mem);
+    register_command("config", "Configuration: list | get | set | save | reset", &cmd_config);
     register_command("audio", "Audio path: status | tone [ms] | loopback [ms] | mute-check", &cmd_audio);
     register_command("ui", "Screen inspection: tree | names | get | tap | key | screen", &cmd_ui);
     register_command("reboot", "Restart the device", &cmd_reboot);
