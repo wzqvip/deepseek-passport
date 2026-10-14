@@ -26,7 +26,14 @@ typedef struct {
     bool secure;
 } passport_wifi_ap_t;
 
-// One-time stack setup and start. Idempotent. NVS must already be initialized.
+// Bring up the network stack itself: esp_netif and the default event loop, with no
+// radio. Idempotent. Required before any socket is created — an HTTP client that
+// assumes someone else did this will assert inside lwIP, which was observed on
+// hardware as "tcpip_send_msg_wait_sem (Invalid mbox)".
+esp_err_t passport_net_init(void);
+
+// One-time station setup and start, on top of passport_net_init(). Idempotent.
+// NVS must already be initialized.
 esp_err_t passport_wifi_init(void);
 
 // Scan and return the number of access points written to `out`, capped at `max`.

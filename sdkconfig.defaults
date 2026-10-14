@@ -30,6 +30,15 @@ CONFIG_LV_MEM_SIZE_KILOBYTES=24
 # 控件命名:串口控制台按名字寻址屏幕元素,名字与屏幕上显示的文字一一对应。
 CONFIG_LV_USE_OBJ_NAME=y
 
+# --- TLS / HTTPS 客户端 ---
+# 证书包:用于校验服务端证书。为了让连接"成功"而关闭校验是不可接受的。
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# 直连模式的内存预算:把 TLS 记录缓冲从默认的 16KB 降到 4KB,
+# 好让实测到的"最大连续空闲块"反映我们真正计划使用的配置,而不是默认值。
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=4096
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
 

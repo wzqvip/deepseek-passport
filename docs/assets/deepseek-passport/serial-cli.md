@@ -45,6 +45,8 @@ Requires `CONFIG_LV_USE_OBJ_NAME=y` (set in `sdkconfig.defaults`).
 | `ui screen` | Active screen name, size, and child count |
 | `reboot` | Restart the device |
 | `audio status\|tone [ms]\|loopback [ms]\|mute-check` | Which subsystem holds the audio path; play a 1 kHz tone; record and play it back with a level reading; prove that a capture is refused while playback holds the path |
+| `net probe <url>` | GET a URL over HTTPS; report the status, the bytes, and the heap measured while the TLS session was open |
+| `llm probe` | POST a minimal chat completion to the configured endpoint, with the same heap reading; a 401 proves the transport worked |
 | `wifi status\|scan\|connect [ms]\|disconnect` | Station state and address; list nearby access points, which needs no credentials; associate using the stored credentials; drop the association |
 | `config list\|get <field>\|set <field> <value>\|save\|reset` | The configuration: every field with secrets shown as set or empty, change a field in RAM, persist it, or restore defaults |
 | `help` | The ESP-IDF console's own command list |

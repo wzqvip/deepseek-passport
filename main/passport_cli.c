@@ -29,6 +29,7 @@
 #include "passport_audio.h"
 #include "passport_config.h"
 #include "passport_config_store.h"
+#include "passport_http.h"
 #include "passport_wifi.h"
 
 #define CLI_NAME_MAX 96
@@ -513,6 +514,94 @@ static int cmd_audio(int argc, char **argv)
     return 1;
 }
 
+static void print_http_result(const char *label, const passport_http_result_t *res,
+                              const char *body)
+{
+    printf("%s: HTTP %d, %d bytes%s, %lld ms\n", label, res->status, res->body_len,
+           res->truncated ? " (truncated)" : "", (long long)res->elapsed_ms);
+    printf("  with the session live: free heap %u B, largest free block %u B (%u KiB)\n",
+           (unsigned)res->heap_during, (unsigned)res->largest_during,
+           (unsigned)(res->largest_during / 1024u));
+    if (body != NULL && body[0] != '\0') {
+        printf("  body: %.240s\n", body);
+    }
+}
+
+static int cmd_net(int argc, char **argv)
+{
+    if (argc < 3 || strcmp(argv[1], "probe") != 0) {
+        printf("usage: net probe <url>\n");
+        printf("  GET a URL over HTTPS and report the status, the bytes, and the heap\n");
+        printf("  measured while the TLS session was open\n");
+        return 1;
+    }
+
+    char body[512];
+    passport_http_result_t res;
+    const passport_http_request_t req = { .url = argv[2], .timeout_ms = 15000u };
+    const esp_err_t err = passport_http_request(&req, &res, body, sizeof(body));
+    if (err != ESP_OK) {
+        printf("net probe: transport failed: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+    print_http_result("net probe", &res, body);
+    return 0;
+}
+
+static int cmd_llm(int argc, char **argv)
+{
+    if (argc < 2 || strcmp(argv[1], "probe") != 0) {
+        printf("usage: llm probe\n");
+        printf("  POST a minimal chat completion to the configured endpoint.\n");
+        printf("  Without a key the server answers 401, which still proves DNS,\n");
+        printf("  the TLS handshake, the HTTP exchange, and the response path.\n");
+        return 1;
+    }
+
+    const passport_config_t *cfg = passport_config_current();
+    if (cfg->llm_base_url[0] == '\0' || cfg->llm_model[0] == '\0') {
+        printf("llm probe: set the endpoint and model first:\n");
+        printf("  config set llm_base_url https://api.deepseek.com\n");
+        printf("  config set llm_model <model>\n");
+        printf("  config set llm_api_key <key>\n");
+        return 1;
+    }
+
+    char url[192];
+    snprintf(url, sizeof(url), "%s/chat/completions", cfg->llm_base_url);
+    if (strstr(cfg->llm_base_url, "/chat/completions") != NULL) {
+        snprintf(url, sizeof(url), "%s", cfg->llm_base_url);   // already a full endpoint
+    }
+
+    char body[256];
+    snprintf(body, sizeof(body),
+             "{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],"
+             "\"max_tokens\":1,\"stream\":false}",
+             cfg->llm_model);
+
+    char resp[768];
+    passport_http_result_t res;
+    const passport_http_request_t req = {
+        .url = url,
+        .api_key = cfg->llm_api_key,
+        .body = body,
+        .timeout_ms = 20000u,
+    };
+
+    printf("llm probe: POST %s (model %s, key %s)\n", url, cfg->llm_model,
+           (cfg->llm_api_key[0] != '\0') ? "set" : "not set - a 401 is expected");
+    const esp_err_t err = passport_http_request(&req, &res, resp, sizeof(resp));
+    if (err != ESP_OK) {
+        printf("llm probe: transport failed: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+    print_http_result("llm probe", &res, resp);
+    if (res.status == 401) {
+        printf("  401 means the transport worked and the credential was rejected.\n");
+    }
+    return (res.status == 200) ? 0 : 1;
+}
+
 static int cmd_wifi(int argc, char **argv)
 {
     if (argc < 2) {
@@ -740,6 +829,8 @@ esp_err_t passport_cli_start(void)
     register_command("ver", "Print the application and ESP-IDF build identity", &cmd_ver);
     register_command("app", "Print uptime, battery, keypad voltage, and memory", &cmd_app);
     register_command("mem", "Print heap, largest free block, and the LVGL pool", &cmd_mem);
+    register_command("net", "HTTPS transport: net probe <url>", &cmd_net);
+    register_command("llm", "Language model: llm probe", &cmd_llm);
     register_command("wifi", "Wi-Fi station: status | scan | connect [ms] | disconnect", &cmd_wifi);
     register_command("config", "Configuration: list | get | set | save | reset", &cmd_config);
     register_command("audio", "Audio path: status | tone [ms] | loopback [ms] | mute-check", &cmd_audio);

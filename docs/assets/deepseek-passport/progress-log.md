@@ -19,6 +19,62 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 8: the HTTPS transport, and a crash the device found
+
+**Milestone:** the transport half of the provider path. The device can issue an HTTPS
+request and report what came back, including the heap with the session live.
+
+### What was built
+
+`passport_http` performs one request with `esp_http_client`, reads the response into
+a caller-supplied buffer with a hard cap, and reports truncation instead of hiding
+it — the repository already has an entry about a fixed 4096-byte document meeting a
+6971-byte response. It takes the heap and largest-free-block readings **while the TLS
+session is established**, because that is the number the direct-mode budget depends
+on; measuring before or after the handshake misses the cost it is meant to capture.
+
+The certificate bundle is enabled, and the TLS record buffers are reduced from the
+16 KB default to 4 KB so the measurement reflects the configuration actually planned
+rather than the default one. Console commands: `net probe <url>` and `llm probe`. The
+latter builds a minimal chat-completion request from the configuration and refuses
+with instructions when the endpoint or model is unset.
+
+### A crash, found by running it on the device
+
+The first `net probe` on hardware asserted inside lwIP:
+
+```text
+assert failed: tcpip_send_msg_wait_sem /IDF/components/lwip/lwip/src/api/tcpip.c:454 (Invalid mbox)
+```
+
+The cause was mine: creating a socket requires the network stack, and only the Wi-Fi
+command had ever initialized it. `passport_net_init()` now owns `esp_netif` and the
+default event loop, the Wi-Fi module builds on it, and the HTTP client calls it
+before touching a socket. A library function must not assume a global initializer ran
+first.
+
+Verified after the fix: `net probe https://api.deepseek.com/` returns
+`ESP_ERR_HTTP_CONNECT` from a clean `getaddrinfo()` failure, the device keeps
+running, and the following commands answer normally.
+
+### A tooling mistake of mine
+
+A flash appeared to fail while printing success lines. The cause was
+`Select-Object -First N` on a native command's output: it short-circuits the pipeline
+and can terminate the upstream process, so the exit code I read was my own filter's,
+not the tool's. Read the exit code into a variable before filtering. The flash had
+succeeded.
+
+### Blocked on one input
+
+Verifying the TLS handshake, the 401 response path, and the "largest free block with
+a live TLS session" number requires the device to be associated with a network. That
+needs the owner's SSID and password: they are not mine to invent, and the scan list
+must not be committed. Everything up to that point is done and verified; the
+association and the provider round trip are the next actions once credentials exist.
+
+---
+
 ## 2026-10-14 — Session 7: the Wi-Fi station, and a truncation bug the compiler caught
 
 **Milestone:** the network layer. The device can find and join a network using

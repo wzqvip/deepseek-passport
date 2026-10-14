@@ -93,12 +93,8 @@ static void on_ip_event(void *arg, esp_event_base_t base, int32_t id, void *data
     ESP_LOGI(TAG, "已获取地址: %s", s_ip);
 }
 
-esp_err_t passport_wifi_init(void)
+esp_err_t passport_net_init(void)
 {
-    if (s_started) {
-        return ESP_OK;
-    }
-
     esp_err_t err = esp_netif_init();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "esp_netif_init 失败: %s", esp_err_to_name(err));
@@ -107,6 +103,19 @@ esp_err_t passport_wifi_init(void)
     err = esp_event_loop_create_default();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "事件循环创建失败: %s", esp_err_to_name(err));
+        return err;
+    }
+    return ESP_OK;
+}
+
+esp_err_t passport_wifi_init(void)
+{
+    if (s_started) {
+        return ESP_OK;
+    }
+
+    esp_err_t err = passport_net_init();
+    if (err != ESP_OK) {
         return err;
     }
 

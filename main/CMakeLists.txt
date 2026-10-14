@@ -7,6 +7,7 @@ idf_component_register(
          "passport_cli.c"
          "passport_config.c"
          "passport_config_store.c"
+         "passport_http.c"
          "passport_wifi.c"
          "passport_metrics_math.c"
          "assets/passport_pet_assets.c"
@@ -16,5 +17,5 @@ idf_component_register(
          "demo_navigation.c"
          "ui_pixel_math.c"
     INCLUDE_DIRS "." "assets"
-    REQUIRES bsp bt console esp_app_format esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash
+    REQUIRES bsp bt console esp-tls esp_app_format esp_event esp_http_client esp_hw_support esp_netif esp_timer esp_wifi mbedtls nvs_flash
 )
