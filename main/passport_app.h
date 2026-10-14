@@ -17,5 +17,9 @@ void passport_app_begin_turn(const char *prompt);
 void passport_app_show_reply(const char *text);
 void passport_app_show_error(const char *reason);
 
+// Switch between the home screen and the setup screen that shows the hotspot credentials.
+void passport_app_show_setup(void);
+void passport_app_show_home(void);
+
 // Stop the worker and delete the UI. Called before teardown.
 void passport_app_stop(void);

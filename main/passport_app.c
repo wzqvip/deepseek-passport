@@ -25,9 +25,12 @@
 #include "lvgl.h"
 #include "passport_audio.h"
 #include "passport_chat.h"
+#include "passport_config_store.h"
 #include "passport_fonts.h"
 #include "passport_pet.h"
+#include "passport_provision.h"
 #include "passport_utf8.h"
+#include "passport_wifi.h"
 
 static const char *TAG = "passport_app";
 
@@ -71,6 +74,15 @@ static lv_obj_t *s_hint;
 static TaskHandle_t s_task;
 static volatile bool s_running;
 static bool s_sleeping;
+
+// The setup screen. It exists because the hotspot credentials were otherwise only
+// readable over the serial console, which defeats the point of provisioning without a
+// cable: the person setting the device up is holding a phone, not a terminal.
+static lv_obj_t *s_setup;
+static lv_obj_t *s_setup_hotspot;
+static lv_obj_t *s_setup_password;
+static lv_obj_t *s_setup_address;
+static bool s_on_setup;
 
 // --- small LVGL helpers -----------------------------------------------------
 
@@ -163,6 +175,84 @@ static void build_home(void)
     lv_screen_load(s_screen);
 }
 
+// --- setup screen -----------------------------------------------------------
+
+static void setup_refresh(void)
+{
+    if (s_setup_hotspot == NULL) {
+        return;
+    }
+    lv_label_set_text_fmt(s_setup_hotspot, "%s", passport_provision_ssid());
+    lv_label_set_text_fmt(s_setup_password, "%s", passport_provision_password());
+    lv_label_set_text_fmt(s_setup_address, "%s", passport_provision_address());
+}
+
+static void build_setup(void)
+{
+    s_setup = lv_obj_create(NULL);
+    lv_obj_remove_flag(s_setup, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(s_setup, lv_color_hex(APP_BG), 0);
+    lv_obj_set_style_border_width(s_setup, 0, 0);
+    lv_obj_set_style_pad_all(s_setup, 0, 0);
+    lv_obj_set_name(s_setup, "setup");
+
+    lv_obj_t *title = label(s_setup, 10, 6, passport_font_body(), APP_PAPER, "setup_title");
+    lv_label_set_text(title, "配网设置");
+    lv_label_set_text(label(s_setup, 10, 26, &lv_font_montserrat_14, APP_MUTED, "setup_step"),
+                      "1. 手机连接下面的热点");
+    plain(s_setup, 0, 44, 240, 2, APP_ACCENT);
+
+    // The two values a person has to read off the panel and type into a phone, so they get
+    // their own rows with a label that says which is which.
+    lv_label_set_text(label(s_setup, 12, 54, &lv_font_montserrat_14, APP_MUTED, "setup_hotspot_label"),
+                      "热点名称");
+    s_setup_hotspot = label(s_setup, 12, 70, passport_font_body(), APP_ACCENT, "hotspot");
+
+    lv_label_set_text(label(s_setup, 12, 96, &lv_font_montserrat_14, APP_MUTED, "setup_password_label"),
+                      "密码");
+    s_setup_password = label(s_setup, 12, 112, passport_font_body(), APP_PAPER, "password");
+
+    lv_label_set_text(label(s_setup, 12, 142, &lv_font_montserrat_14, APP_MUTED, "setup_address_label"),
+                      "2. 打开浏览器访问");
+    s_setup_address = label(s_setup, 12, 158, passport_font_body(), APP_PAPER, "address");
+
+    lv_label_set_text(label(s_setup, 12, 190, &lv_font_montserrat_14, APP_MUTED, "setup_hint"),
+                      "页面会自动弹出。填好 Wi-Fi 与 API Key 后保存。");
+
+    plain(s_setup, 0, 232, 240, 3, APP_ACCENT);
+    lv_label_set_text(label(s_setup, 10, 244, &lv_font_montserrat_14, APP_MUTED, "setup_back"),
+                      "OK: 返回");
+
+    setup_refresh();
+}
+
+void passport_app_show_setup(void)
+{
+    if (!bsp_lvgl_lock(1000)) {
+        return;
+    }
+    if (s_setup == NULL) {
+        build_setup();
+    }
+    setup_refresh();
+    lv_screen_load(s_setup);
+    s_on_setup = true;
+    bsp_lvgl_unlock();
+}
+
+void passport_app_show_home(void)
+{
+    if (s_screen == NULL) {
+        return;
+    }
+    if (!bsp_lvgl_lock(1000)) {
+        return;
+    }
+    lv_screen_load(s_screen);
+    s_on_setup = false;
+    bsp_lvgl_unlock();
+}
+
 // --- worker -----------------------------------------------------------------
 
 static void battery_refresh(void)
@@ -184,6 +274,16 @@ static void battery_refresh(void)
 static void app_task(void *arg)
 {
     (void)arg;
+
+    // Join the network once at start. A configured device should come up online without
+    // anyone pressing anything, and this task is allowed to block while it does — the
+    // station only retried on a disconnect event before, so a reboot left it offline until
+    // a person asked.
+    if (passport_config_current()->wifi_ssid[0] != '\0') {
+        const esp_err_t err = passport_wifi_connect(20000u);
+        ESP_LOGI(TAG, "开机自动连接: %s", esp_err_to_name(err));
+    }
+
     while (s_running) {
         battery_refresh();
         // Between polls the task sleeps, so the gauge read never competes with
@@ -211,7 +311,7 @@ esp_err_t passport_app_start(void)
     bsp_lvgl_unlock();
 
     s_running = true;
-    if (xTaskCreate(app_task, "passport_app", 3584, NULL, 4, &s_task) != pdPASS) {
+    if (xTaskCreate(app_task, "passport_app", 4608, NULL, 4, &s_task) != pdPASS) {
         s_running = false;
         s_task = NULL;
         ESP_LOGE(TAG, "应用工作线程创建失败;界面仍可用,但电量不刷新");
@@ -227,6 +327,17 @@ esp_err_t passport_app_start(void)
         ESP_LOGI(TAG, "音频通路已预热(16kHz/16bit/单声道)");
     }
 
+    // A device with no network configured has nothing to say and no way to be set up
+    // without a cable, so it raises its own access point and says so on the panel.
+    if (passport_config_current()->wifi_ssid[0] == '\0') {
+        if (passport_provision_start() == ESP_OK) {
+            ESP_LOGI(TAG, "未配置 Wi-Fi;已启动配网热点并显示设置屏");
+            passport_app_show_setup();
+        } else {
+            ESP_LOGW(TAG, "未配置 Wi-Fi,但配网热点启动失败");
+        }
+    }
+
     ESP_LOGI(TAG, "Passport 应用已启动");
     return ESP_OK;
 }
@@ -237,12 +348,32 @@ void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
         return;
     }
 
+    // On the setup screen the only button action is to go back; a second OK press must not
+    // start a conversation from a screen that is showing a password.
+    if (s_on_setup) {
+        bsp_lvgl_unlock();
+        if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
+            passport_app_show_home();
+        }
+        return;
+    }
+
     if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
         // Local standby preview. Real power management is a later milestone; this
         // only shows the sleeping expression and states it on screen.
         s_sleeping = !s_sleeping;
         set_mood(s_sleeping ? PASSPORT_PET_SLEEPING : PASSPORT_PET_IDLE, 0);
         bsp_lvgl_unlock();
+        return;
+    }
+
+    if (btn == BSP_BTN_UP && ev == BSP_BTN_LONG) {
+        // Reach the setup screen by hand, for a device whose network changed under it.
+        bsp_lvgl_unlock();
+        if (!passport_provision_active()) {
+            passport_provision_start();
+        }
+        passport_app_show_setup();
         return;
     }
 
@@ -333,6 +464,14 @@ void passport_app_stop(void)
     }
     if (bsp_lvgl_lock(1000)) {
         passport_pet_destroy();
+        if (s_setup != NULL) {
+            lv_obj_delete(s_setup);
+            s_setup = NULL;
+            s_setup_hotspot = NULL;
+            s_setup_password = NULL;
+            s_setup_address = NULL;
+            s_on_setup = false;
+        }
         if (s_screen != NULL) {
             lv_obj_delete(s_screen);
         }

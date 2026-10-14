@@ -19,6 +19,65 @@ Rules for this log:
 
 ---
 
+## 2026-10-14 — Session 15: the setup screen, and the device comes up online by itself
+
+**Milestone:** the hotspot credentials are visible on the device, which is the whole point
+of provisioning without a cable. The gap this closes was real: last session the credentials
+existed only in the serial console, so setting the device up still required the cable the
+feature was meant to remove.
+
+### What was built
+
+A second screen, `setup`, with named objects the console can read: `setup_title`,
+`setup_step`, `hotspot`, `password`, `address`, `setup_hint`, and `setup_back`. It is
+reachable by holding UP, and OK returns home. **OK cannot start a conversation while the
+setup screen is up** — a screen showing a password should not also be a screen that talks
+to a model on a single press.
+
+A device with no Wi-Fi configured now raises its own access point and shows this screen at
+boot, so a factory-fresh unit explains itself.
+
+**Boot auto-connect**: a configured device came up offline until someone asked it to join,
+because the station only retried on a disconnect event. The application worker now joins
+once at start — it is a worker, so blocking there is correct — and the device reaches the
+network unattended: verified connected at 192.168.3.75 after a reboot with no console
+command.
+
+The console's `font shot` now takes any object path and resolves an inactive screen by
+name, so a second screen is inspectable rather than invisible.
+
+### Verified on the device
+
+```text
+ui key up long   ->  active screen becomes setup (12 children)
+ui names         ->  setup_title (the Chinese title, verbatim in the Chinese log),
+                     setup_step, hotspot, password, address, setup_hint, setup_back
+                     all present with their values
+ui get setup/hotspot   text: Passport-91E1
+ui get setup/address   text: 192.168.4.1
+ui key ok click  ->  back to the passport screen
+after a reboot   ->  wifi status: connected at 192.168.3.75 with no command issued
+while home is active, "ui get setup/hotspot" still reads the setup screen
+```
+
+The Chinese on this screen renders because the generated font covers it — the labels above
+were read back verbatim from the display.
+
+### An open limitation, reported rather than papered over
+
+`font shot` renders **container** objects (the conversation panel still snapshots exactly as
+before) but currently fails for **label** objects with "the snapshot could not be rendered".
+The reason is not yet established, and it is not a regression: the case that worked before
+still works.
+
+The consequence is a limit on what this round can claim. The setup screen's **content** is
+verified textually — every label and value was read back from the live objects — but its
+**pixels** were not verified visually, and this log does not claim otherwise. A whole screen
+is also 153,600 bytes at RGB565, which will not fit the largest free block, so snapshots
+have to target a child object.
+
+---
+
 ## 2026-10-14 — Session 14: the device configures itself over its own access point
 
 **Milestone:** first-time setup no longer needs a serial cable. The device raises a

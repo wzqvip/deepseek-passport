@@ -186,7 +186,29 @@ static lv_obj_t *resolve(const char *term)
     if (strncmp(term, screen_name, screen_len) == 0 && term[screen_len] == '/') {
         term += screen_len + 1u;
     }
-    return find_by_path(screen, term);
+
+    lv_obj_t *found = find_by_path(screen, term);
+    if (found != NULL) {
+        return found;
+    }
+    // Fall back to another screen of the display, addressed by name. An inactive screen is
+    // still part of what the device can show — the setup screen holds the hotspot
+    // credentials while the home screen is in front, and both have to be readable.
+    lv_display_t *display = lv_display_get_default();
+    if (display != NULL) {
+        const char *slash = strchr(term, '/');
+        const size_t head_len = (slash != NULL) ? (size_t)(slash - term) : strlen(term);
+        if (head_len > 0u && head_len < CLI_NAME_MAX) {
+            char head[CLI_NAME_MAX];
+            memcpy(head, term, head_len);
+            head[head_len] = '\0';
+            lv_obj_t *other = lv_display_get_screen_by_name(display, head);
+            if (other != NULL && other != screen) {
+                return (slash == NULL) ? other : find_by_path(other, slash + 1);
+            }
+        }
+    }
+    return NULL;
 }
 
 // A tap should land on something clickable: if the named object is a plain
@@ -753,10 +775,10 @@ static int cmd_font(int argc, char **argv)
 {
     if (argc < 2 || (strcmp(argv[1], "probe") != 0 && strcmp(argv[1], "shot") != 0 &&
                      strcmp(argv[1], "check") != 0)) {
-        printf("usage: font <probe|check|shot>\n");
-        printf("  probe   report coverage for a fixed Chinese sample and show it\n");
-        printf("  check   report coverage for the text actually on the display\n");
-        printf("  shot    snapshot the conversation panel and print its ink as ASCII art\n");
+        printf("usage: font <probe|check|shot [path]>\n");
+        printf("  probe        report coverage for a fixed Chinese sample and show it\n");
+        printf("  check        report coverage for the text actually on the display\n");
+        printf("  shot [path]  render an object's pixels as ASCII art (default chat)\n");
         return 1;
     }
 
@@ -813,14 +835,15 @@ static int cmd_font(int argc, char **argv)
 
     // Snapshot the panel rather than the label: the label is transparent, so its
     // snapshot would have no background to compare ink against.
+    const char *target_path = (argc > 2) ? argv[2] : "chat";
     if (!bsp_lvgl_lock(2000)) {
         printf("font shot: could not take the LVGL lock\n");
         return 1;
     }
-    lv_obj_t *panel = resolve("chat");
+    lv_obj_t *panel = resolve(target_path);
     if (panel == NULL) {
         bsp_lvgl_unlock();
-        printf("font shot: no object named \"chat\" on the active screen\n");
+        printf("font shot: nothing named \"%s\" on the active screen\n", target_path);
         return 1;
     }
 
@@ -851,14 +874,14 @@ static int cmd_font(int argc, char **argv)
 
     const uint16_t background = lv_color_to_u16(lv_color_hex(PANEL_RGB565));
     const uint16_t screen_bg = lv_color_to_u16(lv_color_hex(SCREEN_RGB565));
-    const uint16_t accent = lv_color_to_u16(lv_color_hex(ACCENT_RGB565));
 
-    // Text is anything that is not a known non-text colour; antialiased edges therefore
-    // count as ink, which is what makes the shapes below legible.
-    #define IS_INK(px) ((px) != background && (px) != screen_bg && (px) != accent)
+    // Ink is anything that is not one of the two dark backgrounds. Colours are compared
+    // by exclusion rather than by matching the text colour, so this works on the setup
+    // screen as well, where the text is partly the accent colour.
+    #define IS_INK(px) ((px) != background && (px) != screen_bg)
 
-    printf("font shot: %ux%u RGB565, stride %u, %u B from the system heap\n", (unsigned)width,
-           (unsigned)height, (unsigned)stride, (unsigned)data_size);
+    printf("font shot: %s, %ux%u RGB565, stride %u, %u B from the system heap\n", target_path,
+           (unsigned)width, (unsigned)height, (unsigned)stride, (unsigned)data_size);
 
     for (uint32_t y = 0u; y < height; y++) {
         const uint16_t *row = (const uint16_t *)((const uint8_t *)pixels + ((size_t)y * stride));
@@ -927,7 +950,7 @@ static int cmd_prov(int argc, char **argv)
                 route = passport_portal_route(argv[2]);
             }
         }
-        static char page[2048];
+    static char page[2048];
         const int written = passport_provision_render(route, page, sizeof(page));
         if (written < 0) {
             printf("prov page: route \"%s\" resolves to %s, which has no rendered body\n",

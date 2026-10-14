@@ -37,7 +37,7 @@ lv_obj_set_name(s_card, "audio");   /* the card labelled "Audio" */
 | `audio status\|tone [ms]\|loopback [ms]\|mute-check` | 当前哪个子系统占用音频通路；播放 1 kHz 单音；录一段再放回并给出电平读数；验证播放持有通路期间录音会被拒绝 |
 | `net probe <url>` | 对 URL 发 HTTPS GET；报告状态码、字节数，以及 TLS 会话活跃期间测得的堆内存 |
 | `prov status\|start\|stop\|page [route]\|form <k=v>` | 配网热点与它的 Web 控制台：开启或关闭；打印一次请求会返回的确切内容；或按 POST 到 `/save` 的方式应用一次提交 |
-| `font probe` \| `font check` \| `font shot` | 分别针对固定中文样本、**屏幕上真实显示的文本**给出字形覆盖；或把会话面板渲染成 ASCII 图，好在没有摄像头的情况下检查渲染 |
+| `font probe` \| `font check` \| `font shot [path]` | 分别针对固定中文样本、**屏幕上真实显示的文本**给出字形覆盖；或把某个对象的像素渲染成 ASCII 图（默认 `chat`），好在没有摄像头的情况下检查渲染。非活动屏幕可按名字寻址；整屏太大无法快照，请针对子对象 |
 | `llm probe` \| `llm ask <text>` | 向已配置端点 POST：`probe` 发一个最小补全（401 即证明传输通了）；`ask` 发一个问题并打印回答 |
 | `wifi status\|scan\|connect [ms]\|disconnect` | station 状态与地址；列出周边接入点（不需要任何凭据）；用已存凭据关联；断开关联 |
 | `config list\|get <字段>\|set <字段> <值>\|save\|reset` | 配置：列出全部字段（密钥只显示已设置/为空）、在内存中改一个字段、持久化、恢复默认 |
