@@ -33,6 +33,8 @@ void passport_app_show_home(void);
 // both thin drivers, so a document fed from the console updates exactly what a button press
 // would, and there is one copy of the state rather than two that can disagree.
 void passport_app_show_work(void);
+// The settings menu: hold UP from the pet to enter, hold OK to come back.
+void passport_app_show_settings(void);
 bool passport_app_work_feed(const char *json);
 passport_work_action_t passport_app_work_press(passport_work_key_t key);
 const passport_work_view_t *passport_app_work_current(void);

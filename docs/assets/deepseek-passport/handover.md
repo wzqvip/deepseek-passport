@@ -50,9 +50,12 @@ On the home screen:
 | Gesture | What it does |
 | --- | --- |
 | **Hold OK, speak, release** | A spoken turn: record → transcribe → ask DeepSeek → answer on screen and spoken |
-| Hold DOWN | Work mode |
-| Hold UP | The setup screen: the join QR code, the hotspot name and password, the address. **On a device that is already on a network this asks first, and shows the network, its address and the web address** — the hint line offers entering provisioning mode or cancelling — and it expires after twenty seconds if nobody answers |
+| Hold DOWN | Work mode, and stays there until a long OK comes back |
+| Hold UP | **The settings menu**, and stays there until a long OK comes back. It shows the network, its address and the web address permanently, and offers the setup screen, the screen brightness, a spoken test of the voice path, and standby. The menu remembers where it was left |
 | Double-press UP | Stand by: deep sleep, waking on any key |
+
+Inside the settings menu: UP and DOWN move, OK chooses, a long OK comes back to the pet. Inside work
+mode: UP and DOWN move the selection, OK answers, a long OK comes back.
 
 The top-right corner shows whether the device is on a network and how well, next to the battery: the word
 `WiFi` with three bars lit from the signal, or `--` with none lit when there is no association.

@@ -79,19 +79,37 @@ static lv_obj_t *s_battery;
 static lv_obj_t *s_wifi;
 static lv_obj_t *s_wifi_bars[3];
 
-// The hint line has two states, and the confirmation is the reason: it has to be obvious that the
-// buttons mean something different while it is showing.
-#define HINT_DEFAULT "按住OK说话   长按DOWN工作\n长按UP配网   双击UP待机"
-#define HINT_CONFIRM "OK: 进入配网模式   DOWN: 取消"
+// The hint line, and the menu.
+#define HINT_DEFAULT "按住OK说话   长按DOWN工作\n长按UP设置   双击UP待机"
 
-// Set by the button task, acted on by the worker: a long press of UP when this device is already on a
-// network asks first. Re-provisioning is not destructive by itself, but it does raise a hotspot and put
-// a join code on the screen, and someone who is already online usually pressed the button by accident.
-static bool s_confirming;
-static int64_t s_confirm_deadline_us;
-#define CONFIRM_WINDOW_US (20LL * 1000 * 1000)
-// Used by show_home(), which is defined above the question it interrupts.
-static void end_confirmation(bool confirmed);
+// A small settings menu, entered by holding UP and left by holding OK.
+//
+// The owner asked for this shape in as many words: holding a button should *enter* something and stay
+// there, not display something for as long as the finger is down. A menu also gives the network details a
+// home: they were previously only visible during a question that expired after twenty seconds, which is
+// no way to read an address.
+#define SETTINGS_ITEMS 4
+static const char *const SETTINGS_LABELS[SETTINGS_ITEMS] = {
+    "网络与配网", "屏幕亮度", "试听语音", "待机休眠"
+};
+
+// What the menu asked for, done by the worker: the button task must not start a hotspot, write flash, or
+// spend seconds talking to a bridge.
+typedef enum {
+    SETTINGS_ACT_NONE = 0,
+    SETTINGS_ACT_SETUP,
+    SETTINGS_ACT_BRIGHTNESS,
+    SETTINGS_ACT_VOICE_TEST,
+    SETTINGS_ACT_STANDBY,
+} settings_act_t;
+
+static volatile settings_act_t s_settings_act;
+static bool s_settings_requested;
+static bool s_on_settings;
+static lv_obj_t *s_settings;
+static lv_obj_t *s_settings_info;
+static lv_obj_t *s_settings_items[SETTINGS_ITEMS];
+static int s_settings_index;
 static lv_obj_t *s_bubble;
 static lv_obj_t *s_mood;
 static lv_obj_t *s_hint;
@@ -481,13 +499,8 @@ void passport_app_show_home(void)
     lv_screen_load(s_screen);
     s_on_setup = false;
     s_on_work = false;
+    s_on_settings = false;
     bsp_lvgl_unlock();
-
-    // Coming home from the setup screen leaves the interface in its normal state, including a
-    // confirmation that was interrupted by it.
-    if (s_confirming) {
-        end_confirmation(false);
-    }
 
     // Leaving the setup screen releases the join code's pixels: see qr_release() for why they are
     // not held for the life of the device.
@@ -611,6 +624,94 @@ void passport_app_show_work(void)
     lv_screen_load(s_work);
     s_on_work = true;
     bsp_lvgl_unlock();
+}
+
+// --- the settings menu ------------------------------------------------------
+//
+// One screen, four items, the same buttons as the work screen: UP and DOWN move, OK chooses, a long OK
+// comes back. It exists because the alternative — details that are visible only while a button is held,
+// and a question that expires — is not a thing a person can use.
+
+static void build_settings(void)
+{
+    s_settings = lv_obj_create(NULL);
+    lv_obj_remove_flag(s_settings, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(s_settings, lv_color_hex(APP_BG), 0);
+    lv_obj_set_style_border_width(s_settings, 0, 0);
+    lv_obj_set_style_pad_all(s_settings, 0, 0);
+    lv_obj_set_name(s_settings, "settings");
+
+    lv_label_set_text(label(s_settings, 10, 6, passport_font_body(), APP_PAPER, "settings_title"), "设置");
+    plain(s_settings, 0, 28, 240, 2, APP_ACCENT);
+
+    // The network details live here, permanently, instead of appearing only inside a question that
+    // expires. This is the answer to "what address is it on?" and it is readable at leisure.
+    s_settings_info = label(s_settings, 10, 34, passport_font_body(), APP_MUTED, "settings_info");
+    lv_obj_set_width(s_settings_info, 222);
+    lv_obj_set_height(s_settings_info, 40);
+    lv_label_set_long_mode(s_settings_info, LV_LABEL_LONG_WRAP);
+
+    for (int i = 0; i < SETTINGS_ITEMS; i++) {
+        char name[24];
+        snprintf(name, sizeof(name), "settings_item%d", i);
+        s_settings_items[i] = label(s_settings, 10, 86 + i * 34, passport_font_body(), APP_PAPER, name);
+        lv_obj_set_width(s_settings_items[i], 222);
+    }
+
+    lv_label_set_text(label(s_settings, 6, 268, passport_font_body(), APP_MUTED, "settings_hint"),
+                      "UP/DOWN 选择   OK 进入\n长按OK 返回宠物");
+}
+
+// Called with the LVGL lock held.
+static void settings_refresh(void)
+{
+    if (s_settings_info != NULL) {
+        const passport_config_t *cfg = passport_config_current();
+        char ip[20];
+        passport_wifi_ip(ip, sizeof(ip));
+        char line[BUBBLE_MAX];
+        if (ip[0] != '\0') {
+            snprintf(line, sizeof(line), "网络 %.18s · 地址 %.15s\n网页 http://%.15s/", cfg->wifi_ssid, ip, ip);
+        } else {
+            snprintf(line, sizeof(line), "未联网。进入\"网络与配网\"\n用手机连上它的热点");
+        }
+        lv_label_set_text(s_settings_info, line);
+    }
+    for (int i = 0; i < SETTINGS_ITEMS; i++) {
+        if (s_settings_items[i] == NULL) {
+            continue;
+        }
+        const bool selected = (i == s_settings_index);
+        // The selected row is marked by colour and by a caret, because colour alone is not a selection
+        // on a 240-pixel panel held at arm's length in daylight.
+        char text[64];
+        snprintf(text, sizeof(text), "%s%s", selected ? "> " : "   ", SETTINGS_LABELS[i]);
+        lv_label_set_text(s_settings_items[i], text);
+        lv_obj_set_style_text_color(s_settings_items[i], lv_color_hex(selected ? APP_ACCENT : APP_PAPER), 0);
+    }
+}
+
+void passport_app_show_settings(void)
+{
+    if (!bsp_lvgl_lock(1000)) {
+        return;
+    }
+    if (s_settings == NULL) {
+        build_settings();
+    }
+    settings_refresh();
+    lv_screen_load(s_settings);
+    s_on_settings = true;
+    bsp_lvgl_unlock();
+}
+
+// For the worker, which holds no lock when it acts on what the menu asked for.
+static void settings_refresh_locked(void)
+{
+    if (bsp_lvgl_lock(500)) {
+        settings_refresh();
+        bsp_lvgl_unlock();
+    }
 }
 
 bool passport_app_work_feed(const char *json)
@@ -761,9 +862,54 @@ static void app_task(void *arg)
             if (waited % 1000 == 0) {
                 wifi_refresh();
             }
-            // A confirmation that is never answered must not leave the interface in a strange state.
-            if (s_confirming && esp_timer_get_time() > s_confirm_deadline_us) {
-                end_confirmation(false);
+            // The settings menu: built here, and everything it asks for done here, because none of it
+            // belongs on the button task — it encodes a join code, writes flash, or spends seconds
+            // talking to a bridge.
+            if (s_settings_requested) {
+                s_settings_requested = false;
+                passport_app_show_settings();
+            }
+            const settings_act_t act = s_settings_act;
+            if (act != SETTINGS_ACT_NONE) {
+                s_settings_act = SETTINGS_ACT_NONE;
+                switch (act) {
+                case SETTINGS_ACT_SETUP:
+                    qr_reserve();
+                    if (!passport_provision_active()) {
+                        passport_provision_start();
+                    }
+                    passport_app_show_setup();
+                    break;
+                case SETTINGS_ACT_BRIGHTNESS: {
+                    // Three steps round: dim, normal, bright. Written through and saved, so the choice
+                    // survives a reboot, and applied immediately because that is the point of the item.
+                    const uint8_t now = passport_config_current()->brightness;
+                    const uint8_t next = (now >= 90u) ? 40u : (uint8_t)(now + 30u);
+                    passport_config_mutable()->brightness = next;
+                    passport_config_store_save();
+                    bsp_display_backlight(next);
+                    settings_refresh_locked();
+                    ESP_LOGI(TAG, "亮度 %u%%", (unsigned)next);
+                    break;
+                }
+                case SETTINGS_ACT_VOICE_TEST:
+                    // The whole voice path in one press: the bridge's synthesis, the device's speaker.
+                    // This exists because "is the voice side working?" should not require holding a
+                    // button and talking to a machine that may be listening to a quiet room.
+                    passport_app_show_status("试听语音…", PASSPORT_PET_THINKING);
+                    if (passport_speech_speak("你好，我是 DeepSeek 随身宠物。") != ESP_OK) {
+                        passport_app_show_error("网关没回应,检查中继和 bridge_url");
+                    }
+                    break;
+                case SETTINGS_ACT_STANDBY:
+                    passport_app_show_status("待机…", PASSPORT_PET_SLEEPING);
+                    vTaskDelay(pdMS_TO_TICKS(500));   // let the screen and the pet settle before dark
+                    // No timer: any key wakes it, and a device in a pocket should not wake itself.
+                    passport_power_sleep(0u);
+                    break;
+                default:
+                    break;
+                }
             }
             // Requests from the button task that are too heavy for it: building the setup screen
             // means encoding the join code. See the long-press-of-UP branch in passport_app_key().
@@ -841,59 +987,7 @@ esp_err_t passport_app_start(void)
 }
 
 // --- the re-provisioning question -------------------------------------------
-//
-// Three small pieces, because they are used from two tasks: the hint line's two states, asking the
-// question, and answering it. Each takes the interface lock itself.
-
-static void set_hint_text(const char *text)
-{
-    if (s_hint != NULL) {
-        lv_label_set_text(s_hint, text);
-    }
-}
-
-static void begin_confirmation(void)
-{
-    if (!bsp_lvgl_lock(500)) {
-        return;
-    }
-    s_confirming = true;
-    s_confirm_deadline_us = esp_timer_get_time() + CONFIRM_WINDOW_US;
-    // Order matters here too: set_mood() writes that mood's stock line into the bubble.
-    set_mood(PASSPORT_PET_CURIOUS, 0);
-
-    // The question shows what it is asking about: the network this device is on, its address, and the
-    // page that address serves. Someone who long-presses this button on a working device is usually
-    // after the address rather than after a re-provision, so making them enter the setup screen to read
-    // it — and tearing the network down to show a hotspot — would be the wrong way round.
-    char ip[20];
-    passport_wifi_ip(ip, sizeof(ip));
-    char line[BUBBLE_MAX];
-    snprintf(line, sizeof(line), "网络 %.20s\n地址 %.15s\n网页 http://%.15s/",
-             passport_config_current()->wifi_ssid, ip, ip);
-    set_bubble(line);
-    set_hint_text(HINT_CONFIRM);
-    bsp_lvgl_unlock();
-    ESP_LOGI(TAG, "已联网(%s),询问是否进入配网模式", ip);
-}
-
-static void end_confirmation(bool confirmed)
-{
-    if (!bsp_lvgl_lock(500)) {
-        return;
-    }
-    s_confirming = false;
-    set_hint_text(HINT_DEFAULT);
-    if (confirmed) {
-        // The worker builds it: it owns the encoder, and this may be the button task.
-        s_setup_requested = true;
-        set_bubble("好,打开配网屏…");
-    } else {
-        set_mood(PASSPORT_PET_IDLE, 0);
-    }
-    bsp_lvgl_unlock();
-    ESP_LOGI(TAG, "重新配网:%s", confirmed ? "已确认" : "已取消");
-}
+// The hint line, which the settings menu left with one set of words to say.
 
 void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
 {
@@ -927,16 +1021,32 @@ void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
         return;
     }
 
-    // While the device is asking whether to re-provision, the buttons mean only yes and no. This sits
-    // above everything else, including push-to-talk, because otherwise a press of OK would start a
-    // recording instead of answering the question.
-    if (s_confirming) {
+    // Inside the settings menu, the buttons mean what the menu says they mean. This sits above
+    // everything else, including push-to-talk, so that choosing an item cannot also start a recording.
+    if (s_on_settings) {
         bsp_lvgl_unlock();
+        if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
+            passport_app_show_home();
+            return;
+        }
+        if (ev != BSP_BTN_CLICK) {
+            return;
+        }
+        if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
+            const int step = (btn == BSP_BTN_UP) ? SETTINGS_ITEMS - 1 : 1;
+            s_settings_index = (s_settings_index + step) % SETTINGS_ITEMS;
+            settings_refresh_locked();
+            return;
+        }
         if (btn == BSP_BTN_OK) {
-            end_confirmation(true);
-        } else if (btn == BSP_BTN_DOWN || btn == BSP_BTN_UP ||
-                   (btn == BSP_BTN_OK && ev == BSP_BTN_RELEASE)) {
-            end_confirmation(false);
+            // Only an intent is recorded here. Everything these items actually do belongs to the
+            // worker: one raises a hotspot, one writes flash, one spends seconds on the network.
+            static const settings_act_t ACTS[SETTINGS_ITEMS] = {
+                SETTINGS_ACT_SETUP, SETTINGS_ACT_BRIGHTNESS, SETTINGS_ACT_VOICE_TEST,
+                SETTINGS_ACT_STANDBY
+            };
+            s_settings_act = ACTS[s_settings_index];
+            ESP_LOGI(TAG, "设置菜单选择: %s", SETTINGS_LABELS[s_settings_index]);
         }
         return;
     }
@@ -991,20 +1101,17 @@ void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
     }
 
     if (btn == BSP_BTN_UP && ev == BSP_BTN_LONG) {
-        // Reach the setup screen by hand, for a device whose network changed under it.
+        // Enter the settings menu, and stay there until a long OK comes back.
         //
-        // On a device that is already on a network this asks first. Re-provisioning is not destructive,
-        // but it raises a hotspot and puts a join code on the screen, and the likeliest reason to press
-        // this on a working device is a mistake: the answer to "did you mean to?" should not be a
-        // screen full of credentials. Only the request is made here — building that screen encodes the
-        // join code, which needs about six kilobytes, and the button task has less than that.
+        // This used to open the setup screen directly, and for a device that was already on a network it
+        // asked a yes-or-no question that expired after twenty seconds. The owner asked for the shape
+        // that replaced both: a held button *enters* something, and the network details and the join code
+        // are items inside it rather than a decision forced on the way past.
+        //
+        // Only the request is made here. Building a screen and (for the join code) encoding a symbol is
+        // the worker's job: this task's stack is smaller than the encoder needs.
         bsp_lvgl_unlock();
-        if (passport_wifi_state() == PASSPORT_WIFI_CONNECTED &&
-            passport_config_current()->wifi_ssid[0] != '\0') {
-            begin_confirmation();
-        } else {
-            s_setup_requested = true;
-        }
+        s_settings_requested = true;
         return;
     }
 

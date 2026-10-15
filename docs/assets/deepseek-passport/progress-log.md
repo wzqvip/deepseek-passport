@@ -19,6 +19,32 @@ Rules for this log:
 
 ---
 
+## 2026-10-15 — Session 43: a settings menu, entered rather than displayed
+
+The owner asked for a change of shape rather than a feature: holding a button should **enter** something and
+stay there, not display something for as long as a finger is down. Holding UP now enters a small settings
+screen; a long OK comes back; holding DOWN still enters work mode.
+
+**The settings menu**, with the network details given a permanent home:
+
+| item | what it does |
+| --- | --- |
+| 网络与配网 | the network, its address and the web address, always visible here; choosing it opens the setup screen with the join code and the hotspot |
+| 屏幕亮度 | cycles 40, 70, 100 per cent and saves it, applied immediately |
+| 试听语音 | speaks a Chinese sentence through the bridge, so "does the voice path work?" no longer requires holding a button and talking into a room |
+| 待机休眠 | standby, as the double press of UP does |
+
+Verified on the device: holding UP reaches the settings screen, UP and DOWN move the selection with a caret
+and a colour, a long OK returns to the pet, and the information line reads the network, the address and the
+page. The address — which the owner asked for — is now readable at leisure instead of during a question that
+expired after twenty seconds.
+
+The menu remembers where it was left, which is right for a menu and was how a test of mine selected standby
+by accident; the device was asleep until a key was pressed. That is the standby item working, and it is
+worth knowing before writing a test that counts button presses from a remembered position.
+
+---
+
 ## 2026-10-15 — Session 42: "holding OK does nothing" had three causes, and only one was the button
 
 The owner reported that holding OK had stopped responding. It had three causes at once, and the button was
