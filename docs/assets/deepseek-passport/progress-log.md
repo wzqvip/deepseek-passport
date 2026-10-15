@@ -61,7 +61,7 @@ was delivered, the log said so, and the panel sat on whatever it had said before
 Testing that fix turned up a separate, pre-existing defect, and it is worth writing down exactly:
 
 ```text
-screen: 你好！(Nǐ hǎo!)                 the model's answer, correct, on the panel
+panel:  the model's answer, correct, a short Chinese greeting with a romanisation
 bridge: GET /speak raw='text=%14'        a single byte, value twenty
 ```
 
