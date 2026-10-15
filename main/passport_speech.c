@@ -603,8 +603,11 @@ static void run_turn(void)
 
     passport_voice_action_t action = passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_TALK_PRESS);
     if (action != PASSPORT_VOICE_ACT_OPEN_MIC) {
+        // Say so. A press that is accepted and then quietly does nothing is what the owner reported as
+        // "holding OK does nothing", and the console's record of it was the only place it was visible.
         snprintf(s_last, sizeof(s_last), "press refused in state %s",
                  passport_voice_state_name(s_voice.state));
+        passport_app_show_error("还在处理上一条");
         return;
     }
     passport_app_show_status("听你说…", PASSPORT_PET_LISTENING);
@@ -617,7 +620,13 @@ static void run_turn(void)
     action = passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_TALK_RELEASE);
     if (result == -1) {
         passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_FAILED);
-        passport_app_show_error(s_last);
+        // Distinguish "this device has no network" from everything else, and say the first one in words
+        // the owner can act on: the console's record ("not associated") is for the console.
+        if (passport_wifi_state() != PASSPORT_WIFI_CONNECTED) {
+            passport_app_show_error("没连上网络,先配网吧");
+        } else {
+            passport_app_show_error(s_last);
+        }
         passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_RESET);
         return;
     }

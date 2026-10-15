@@ -429,14 +429,19 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/work-status":
+            # No document unless there is one to serve. An invented idle document is not harmless: the
+            # device treats a status document as a notification and takes the screen over with it, and on
+            # that screen the talk button answers an option instead of starting a conversation. The owner
+            # reported exactly that — "holding OK does nothing" — with a bridge that was cheerfully
+            # reporting "waiting for a task, idle" to a device that wanted to be a pet.
             document = self.work_status
             if document is None:
                 try:
                     with open(STATUS_FILE, encoding="utf-8") as handle:
                         document = handle.read()
                 except OSError:
-                    with LOCK:
-                        document = json.dumps(STATE["status"])
+                    self._json({"error": "no work to report"}, 404)
+                    return
             self._send(200, document.encode(), "application/json")
             return
 

@@ -636,6 +636,19 @@ bool passport_app_work_feed(const char *json)
                          (strcmp(parsed.question, s_work_view.question) != 0) ||
                          (parsed.option_count != s_work_view.option_count);
 
+    // And "nothing is running" is not news either, whatever it says about the task.
+    //
+    // This is the second half of the same lesson, learned from the owner: a bridge that answers every
+    // poll with an idle document — "waiting for a task", state idle — took the screen over once and left
+    // it there, and on the work screen OK answers an option instead of starting a conversation. The
+    // owner held the talk button and nothing happened, because the device was showing a screen that has
+    // no talk button. A notification has to be about something happening: an idle report is not a
+    // reason to leave the screen where talking works.
+    const bool worth_showing = (parsed.state == PASSPORT_WORK_RUNNING) ||
+                               (parsed.state == PASSPORT_WORK_WAITING) ||
+                               (parsed.state == PASSPORT_WORK_DONE) ||
+                               (parsed.state == PASSPORT_WORK_FAILED);
+
     s_work_view = parsed;
     if (s_work == NULL) {
         build_work();
@@ -643,7 +656,7 @@ bool passport_app_work_feed(const char *json)
     // A document that arrives while the home screen is showing takes it over, the way a notification
     // would. It does not interrupt the setup screen: someone mid-provisioning should not be thrown out
     // of it by a background update.
-    if (!s_on_setup && changed) {
+    if (!s_on_setup && changed && worth_showing) {
         lv_screen_load(s_work);
         s_on_work = true;
     }
@@ -892,7 +905,25 @@ void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
     // Standby and the application share the same three buttons, so this is the one place that has
     // to arbitrate between "wake up" and "act".
     if (passport_power_activity()) {
+        // Except for the talk button. Someone who holds OK on a dark screen is pressing the button that
+        // means "I am about to speak", and requiring them to press it twice — once to light the screen
+        // and once to talk — reads as a device that ignored them. The owner reported exactly that. The
+        // silence gate is what makes this safe: a press in a pocket opens the microphone, hears a room,
+        // and uploads nothing.
+        //
+        // The release matters just as much as the press, and for a worse reason: if the screen dims
+        // again while the button is still held — which it will, because a held button is not the kind of
+        // activity that resets the idle timer — a swallowed release leaves the microphone open until the
+        // thirty-second ceiling, and the turn is never sent. Both ends of the press are honoured.
+        const bool talks = (btn == BSP_BTN_OK);
         bsp_lvgl_unlock();
+        if (talks) {
+            if (ev == BSP_BTN_PRESS) {
+                passport_speech_talk_down();
+            } else if (ev == BSP_BTN_RELEASE) {
+                passport_speech_talk_up();
+            }
+        }
         return;
     }
 

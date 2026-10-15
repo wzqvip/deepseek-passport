@@ -19,6 +19,64 @@ Rules for this log:
 
 ---
 
+## 2026-10-15 — Session 42: "holding OK does nothing" had three causes, and only one was the button
+
+The owner reported that holding OK had stopped responding. It had three causes at once, and the button was
+the only innocent one.
+
+### It was on the work screen
+
+```text
+screen work  240x320  children=13
+```
+
+On the work screen OK answers the selected option; it does not start a conversation. The device had been
+put there by the bridge's status document — `{"task": "waiting for a task", "state": "idle"}` — which the
+work feed treated as a notification worth taking the screen over for. So the owner held the talk button on
+a screen that has no talk button, and the device was working exactly as written.
+
+Two fixes, one at each end, because either alone leaves the trap:
+
+- **A document that says nothing is happening is not news.** The screen is taken over only for a state
+  that is running, waiting, done or failed — never for idle — so an idle report cannot move the interface
+  away from where talking works.
+- **The bridge no longer invents a status.** Its `/work-status` answers 404 when there is nothing to
+  report, instead of a cheerful idle document whose only effect was to take over a pet's screen.
+
+The work screen already said how to leave (`UP/DOWN 选择  OK 确认  长按OK 返回`), which is what a person
+who lands there needs — and the owner, reasonably, had not read it as an instruction about the button they
+were holding.
+
+### The device had also lost its network, and refused turns silently
+
+```text
+wifi: Association refused temporarily time 1000, comeback time 1100 (TUs)
+voice: last="not associated"
+```
+
+The turn needs the network; it refused and said **nothing on screen**, so the console's record was the only
+place the reason existed. The refusal now says so in words the owner can act on, and that is the general
+rule this session added: every path that declines to do something says so where it can be seen.
+
+Recovering it taught a lesson of its own. The association was refused temporarily — a router rate limit —
+and repeated `wifi connect` attempts kept it refused and then left the station in a failed state. A reboot
+re-associated immediately. Hammering a link that has just refused you is not a diagnostic.
+
+### And the wake swallow, which was a genuine defect
+
+A press on a dark screen was consumed as "wake up" and did nothing else, so holding OK on a sleeping device
+required pressing it twice. That is a defensible rule for a notification button and a wrong one for a
+push-to-talk button: the talk press now lights the screen **and** starts listening, and the **release** is
+honoured too — a release that arrives after the screen has dimmed again used to be swallowed, which left
+the microphone open until the thirty-second ceiling and never sent the turn. The silence gate is what makes
+the first change safe: a press in a pocket opens the microphone, hears a room, and uploads nothing.
+
+Verified on the device: an idle document leaves the home screen alone, a running one still takes it over, a
+long press leaves the work screen, and a press on a dark screen reaches `state=listening mic=open` with the
+panel showing the listening line.
+
+---
+
 ## 2026-10-15 — Session 41: the device now waits visibly, and a length where the reply should be
 
 The owner's report was precise and correct: **"the bridge was still transcribing after six attempts"** —
