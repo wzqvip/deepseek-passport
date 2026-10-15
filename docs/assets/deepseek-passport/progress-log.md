@@ -19,6 +19,71 @@ Rules for this log:
 
 ---
 
+## 2026-10-15 — Session 40: the bridge with a real key, and both directions verified
+
+The owner supplied a SiliconFlow key, so the stand-in answers could be replaced with real ones. The
+service's own documentation also corrected two of my assumptions, which is why it is worth reading before
+guessing at an API:
+
+- **The voice name must carry the model**: `FunAudioLLM/CosyVoice2-0.5B:claire`. A bare `anna` is
+  rejected with `{"code":20047,"message":"Invalid voice."}` — a clear error, and the reason the first
+  attempt failed. The eight preset voices are alex, benjamin, charles, david, anna, bella, claire and
+  diana.
+- **`sample_rate` is a request parameter**, so `response_format: pcm` with `sample_rate: 16000` returns
+  exactly what this device plays. Nothing in the path needs decoding or resampling, which was the whole
+  reason for choosing PCM in the first place.
+
+### Both directions, verified with real models
+
+The bridge now has `--selftest`, which round-trips the two directions with no device and no person:
+speech synthesis is asked for a sentence, and the audio that comes back is fed straight into recognition
+as if the device had recorded it.
+
+```text
+selftest: asking the provider to speak a Chinese test sentence
+  synthesis returned 107438 bytes of 16 kHz PCM (3.4 s)
+selftest: feeding that audio back as if the device had spoken it
+  recognition returned that sentence: 17 of the 17 distinct characters, in order
+```
+
+A round trip through two models that returns the sentence **character for character** is more than the
+test was written to expect. Both credentials, both request shapes and the rate handling are therefore
+exercised — and this is the only way to test the microphone half without a person talking.
+
+### The device, speaking real audio
+
+```text
+voice speak hello there        -> bridge received it, device played 14678 samples
+voice speak (the last answer)  -> DeepSeek's Chinese reply, 37079 samples played (2.3 s at 16 kHz)
+```
+
+The second is the important one: the Chinese answer came from the model, went to the bridge as a
+URL-encoded query, was synthesized by SiliconFlow and was played by the device. The wire bytes were
+checked rather than assumed, because the log made them look wrong:
+
+```text
+raw = text=%E4%BD%A0%E5%A5%BD%EF%BC%8C%E5%BE%88%E9%AB%98%E5%85%B4%E4%B8%BA%E4%BD%A0%E6%9C%8D%E5%8A%A1%E3%80%82
+      = the reply, correctly percent-encoded UTF-8
+```
+
+**The garbage was in the log file, not on the wire.** The bridge was started with a redirect through a
+GBK console, so correct UTF-8 in memory came out of the log as replacement characters and the device was
+blamed for a moment. The bridge now reconfigures its own output streams to UTF-8 whatever the console
+code page is, because a log its own author cannot read back is a log that produces exactly this kind of
+false conclusion.
+
+### One real limitation found, and it is not in the voice path
+
+`voice speak <Chinese text>` typed into the **serial console** loses its argument: the device echoes the
+characters back correctly, then speaks the model's last answer instead, as though the argument were
+absent. Typing Chinese into this console does not work, which also means a Chinese Wi-Fi SSID cannot be
+typed there — the web console handles it, which is how the device is configured, but the serial console
+should not quietly do the wrong thing. Recorded as a defect for the CLI rather than fixed here, because it
+is not on the voice path: a transcript arrives in an HTTP response body and an answer arrives in JSON, and
+both were proven above.
+
+---
+
 ## 2026-10-15 — Session 39: the bridge exists, and its endpoints were verified one at a time
 
 The owner asked which speech services to use and where to find them, and to go and look. Both, and then

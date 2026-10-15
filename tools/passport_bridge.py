@@ -42,6 +42,7 @@ import math
 import os
 import re
 import struct
+import sys
 import threading
 import urllib.error
 import urllib.parse
@@ -68,7 +69,14 @@ LOCK = threading.Lock()
 
 
 def log(message):
-    print(message, flush=True)
+    # Explicitly UTF-8, whatever the console's own code page is. The transcripts and the answers are
+    # Chinese, and a log that turns them into replacement characters is a log that cannot be read back —
+    # which is exactly what happened: a redirect through a GBK console made correct UTF-8 on the wire
+    # look like a device bug for a while.
+    try:
+        print(message, flush=True)
+    except UnicodeEncodeError:
+        print(message.encode("ascii", "backslashreplace").decode("ascii"), flush=True)
 
 
 def pcm_to_wav(pcm: bytes, rate: int = SAMPLE_RATE) -> bytes:
@@ -82,6 +90,21 @@ def pcm_to_wav(pcm: bytes, rate: int = SAMPLE_RATE) -> bytes:
     header += struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
     header += b"data" + struct.pack("<I", len(pcm))
     return header + pcm
+
+
+def strip_wav(data: bytes) -> bytes:
+    """Pull the audio out of a WAV container, for providers that will not return raw PCM."""
+    marker = data.find(b"data")
+    if data[:4] != b"RIFF" or marker < 0:
+        return data   # not a container; assume it is already audio
+    return data[marker + 8:]
+
+
+def wav_rate(data: bytes) -> int:
+    """The sample rate out of a WAV header, or 0 when this is not a container."""
+    if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        return 0
+    return struct.unpack_from("<I", data, 24)[0]
 
 
 def resample(pcm: bytes, from_rate: int, to_rate: int) -> bytes:
@@ -142,19 +165,26 @@ class OpenAICompatibleProvider:
 
     name = "openai-compatible"
 
-    def __init__(self, base_url, api_key, stt_model, tts_model, tts_voice):
+    def __init__(self, base_url, api_key, stt_model, tts_model, tts_voice, tts_gain=0.0):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.stt_model = stt_model
         self.tts_model = tts_model
         self.tts_voice = tts_voice
+        self.tts_gain = tts_gain
 
     def _post(self, path, data, content_type):
         request = urllib.request.Request(self.base_url + path, data=data)
         request.add_header("Authorization", "Bearer " + self.api_key)
         request.add_header("Content-Type", content_type)
-        with urllib.request.urlopen(request, timeout=60) as response:
-            return response.read()
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            # The provider's own explanation, because a wrong model name is the most likely mistake here
+            # and "HTTP 400" on its own does not say which one.
+            detail = error.read().decode("utf-8", errors="replace")[:300]
+            raise RuntimeError(f"HTTP {error.code} from {path}: {detail}") from None
 
     def transcribe(self, wav: bytes) -> str:
         boundary = "----passport" + uuid.uuid4().hex
@@ -174,16 +204,30 @@ class OpenAICompatibleProvider:
         return (parsed.get("text") or "").strip()
 
     def speak(self, text: str) -> bytes:
-        payload = json.dumps(
-            {
-                "model": self.tts_model,
-                "input": text,
-                "voice": self.tts_voice,
-                "response_format": "pcm",   # raw PCM avoids needing an audio decoder here
-            }
-        ).encode()
-        pcm = self._post("/audio/speech", payload, "application/json")
-        return resample(pcm, TTS_SAMPLE_RATE, SAMPLE_RATE)
+        # Ask for raw PCM at the rate this device plays, so nothing has to be decoded or resampled.
+        # Not every service honours that, so a WAV response is the fallback, its header is stripped and
+        # its declared rate is read from the header rather than assumed.
+        try:
+            return self._speak_as(text, "pcm")
+        except RuntimeError as error:
+            log(f"  raw PCM refused ({error}); asking for WAV instead")
+        wav = self._speak_as(text, "wav")
+        rate = wav_rate(wav) or TTS_SAMPLE_RATE
+        return resample(strip_wav(wav), rate, SAMPLE_RATE)
+
+    def _speak_as(self, text: str, fmt: str) -> bytes:
+        payload = {
+            "model": self.tts_model,
+            "input": text,
+            "voice": self.tts_voice,
+            "response_format": fmt,
+            "sample_rate": SAMPLE_RATE,
+        }
+        if self.tts_gain:
+            # A small speaker at low volume is a real problem for a pocket device; the provider's own
+            # gain control is a better answer than scaling samples here.
+            payload["gain"] = self.tts_gain
+        return self._post("/audio/speech", json.dumps(payload).encode(), "application/json")
 
 
 class DashScopeProvider:
@@ -343,6 +387,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/speak":
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             text = (query.get("text") or [""])[0]
+            # The raw escapes are logged alongside the decoded text: if a device percent-encodes
+            # something other than UTF-8, the decoded text becomes replacement characters and the
+            # question "who mangled it" is answered by the two lines together.
+            raw = urllib.parse.urlparse(self.path).query
+            log(f"GET /speak raw={raw[:160]!r}")
             if not text:
                 self._send(404, b"no text", "text/plain")
                 return
@@ -413,11 +462,46 @@ def build_provider(args):
         args.api_key,
         args.stt_model or "FunAudioLLM/SenseVoiceSmall",
         args.tts_model or "FunAudioLLM/CosyVoice2-0.5B",
-        args.tts_voice or "anna",
+        # SiliconFlow wants the model name in front of the voice: `model:voice`. Its preset voices are
+        # alex, benjamin, charles, david, anna, bella, claire and diana; claire is the gentle one, which
+        # suits a small creature more than a newsreader does.
+        args.tts_voice or "FunAudioLLM/CosyVoice2-0.5B:claire",
+        args.tts_gain,
     )
 
 
+def selftest(provider, phrase="你好，这是随身宠物在测试语音通路。"):
+    """Round-trip both directions with the configured provider, without a device or a person.
+
+    Speech synthesis is asked for a sentence, and the audio that comes back is fed straight into speech
+    recognition as if the device had recorded it. That exercises both credentials, both request shapes
+    and the resampling, and it is the only way to test the microphone half without someone talking.
+    """
+    log(f"selftest: asking the provider to speak {phrase!r}")
+    audio = provider.speak(phrase)
+    seconds = len(audio) / 2.0 / SAMPLE_RATE
+    log(f"  synthesis returned {len(audio)} bytes of 16 kHz PCM ({seconds:.1f} s)")
+    if seconds < 0.4:
+        raise SystemExit("selftest: too little audio came back to be speech; check the model and voice")
+    log("selftest: feeding that audio back as if the device had spoken it")
+    heard = provider.transcribe(pcm_to_wav(audio))
+    log(f"  recognition heard: {heard!r}")
+    log(f"  the sentence was:  {phrase!r}")
+    overlap = sum(1 for ch in set(heard) if ch in phrase)
+    log(f"  {overlap} of the {len(set(heard))} distinct characters heard appear in the sentence")
+    log("selftest: both directions answered. A round trip through two models is not expected to be"
+        " character-perfect; what this proves is that the credentials, the request shapes and the"
+        " resampling all work.")
+
+
 def main():
+    # The device's transcripts and answers are Chinese; make sure this process can write them.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
+
     parser = argparse.ArgumentParser(description="The Passport device's companion bridge.")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--host", default="0.0.0.0")
@@ -428,14 +512,22 @@ def main():
     parser.add_argument("--stt-model", default="")
     parser.add_argument("--tts-model", default="")
     parser.add_argument("--tts-voice", default="")
+    parser.add_argument("--tts-gain", type=float, default=0.0,
+                        help="the provider's own gain in dB, for the small speaker (range -10 to 10)")
     parser.add_argument("--fake", action="store_true",
                         help="no key and no network: a canned transcript and a tone")
+    parser.add_argument("--selftest", action="store_true",
+                        help="round-trip speech synthesis and recognition once, then exit")
     parser.add_argument("--work-status", default="",
                         help="a fixed document for the work screen, instead of reading " + STATUS_FILE)
     args = parser.parse_args()
 
     Handler.provider = build_provider(args)
     Handler.work_status = args.work_status or None
+
+    if args.selftest:
+        selftest(Handler.provider)
+        return
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     log(f"passport bridge on http://{args.host}:{args.port} using '{Handler.provider.name}'")

@@ -43,8 +43,21 @@ provider from its flags, so this is a choice of one key rather than one firmware
 | Step | First choice | Why | Where |
 | --- | --- | --- | --- |
 | Speech to text | **SiliconFlow** `FunAudioLLM/SenseVoiceSmall` | OpenAI-compatible `/v1/audio/transcriptions`, good Mandarin, one key, reachable from the mainland | [docs](https://docs.siliconflow.cn/docs/api/audio-transcriptions-post) |
-| Text to speech | **SiliconFlow** `FunAudioLLM/CosyVoice2-0.5B` | The **same key and the same OpenAI-compatible shape** (`/v1/audio/speech`, `response_format: pcm`), so no decoder is needed anywhere | [models](https://siliconflow.cn/models?q=CosyVoice2-0.5B) |
+| Text to speech | **SiliconFlow** `FunAudioLLM/CosyVoice2-0.5B` | The **same key and the same OpenAI-compatible shape**, and `response_format: pcm` with `sample_rate: 16000` returns exactly what the device plays, so nothing in the path decodes or resamples | [models](https://siliconflow.cn/models?q=CosyVoice2-0.5B) |
 | Language model | **DeepSeek** | Already on the device and verified; nothing to change | [platform](https://platform.deepseek.com/) |
+
+Two things the service's documentation says that are easy to get wrong, both learned the hard way:
+the **voice name must carry the model** (`FunAudioLLM/CosyVoice2-0.5B:claire`, and the preset voices are
+alex, benjamin, charles, david, anna, bella, claire and diana), and **`sample_rate` is a request
+parameter** rather than something to fix up afterwards. Both are handled by the bridge.
+
+Verify the key without spending anything on a device or a person:
+
+```bash
+python tools/passport_bridge.py --selftest        # speaks a sentence, transcribes it back, compares
+```
+
+That round trip is how the key was checked: it returned the sentence character for character.
 
 One service for both directions is the point: the device knows one `bridge_url`, and one key covers the
 two directions that need one, which is the difference between a working device this evening and a

@@ -36,8 +36,20 @@ device: PCM16 -> ring buffer -> I2S -> speaker        (microphone muted)
 | 环节 | 首选 | 为什么 | 在哪里 |
 | --- | --- | --- | --- |
 | 语音识别 | **硅基流动** `FunAudioLLM/SenseVoiceSmall` | OpenAI 兼容的 `/v1/audio/transcriptions`，中文好，一个密钥，国内可直连 | [文档](https://docs.siliconflow.cn/docs/api/audio-transcriptions-post) |
-| 语音合成 | **硅基流动** `FunAudioLLM/CosyVoice2-0.5B` | **同一个密钥、同一种 OpenAI 兼容形态**（`/v1/audio/speech`，`response_format: pcm`），所以**任何地方都不需要解码器** | [模型](https://siliconflow.cn/models?q=CosyVoice2-0.5B) |
+| 语音合成 | **硅基流动** `FunAudioLLM/CosyVoice2-0.5B` | **同一个密钥、同一种 OpenAI 兼容形态**，而且 `response_format: pcm` 配 `sample_rate: 16000` **返回的正是设备要播的东西**，整条链路不解码也不重采样 | [模型](https://siliconflow.cn/models?q=CosyVoice2-0.5B) |
 | 对话模型 | **DeepSeek** | 设备上已经在用并已验证，无需改动 | [平台](https://platform.deepseek.com/) |
+
+服务商文档里有两件容易搞错的事，两件都是**踩过才知道**的：**音色名必须带上模型**
+（`FunAudioLLM/CosyVoice2-0.5B:claire`，预置音色是 alex、benjamin、charles、david、anna、bella、claire、
+diana），以及 **`sample_rate` 是请求参数**，不是事后补救的东西。两者中继都处理了。
+
+不花钱、不用设备、也不用人，就能验证密钥：
+
+```bash
+python tools/passport_bridge.py --selftest        # 让它说一句话,再转写回来,然后比较
+```
+
+密钥就是这么检查的：它**逐字符**把原句还了回来。
 
 **两个方向用同一个服务，关键就在这里**：设备只知道一个 `bridge_url`，而一个密钥就覆盖了需要密钥的
 两个方向——这是"今晚就能用的设备"与"配了一半的设备"之间的差别。
