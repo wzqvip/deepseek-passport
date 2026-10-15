@@ -19,6 +19,69 @@ Rules for this log:
 
 ---
 
+## 2026-10-15 — Session 41: the device now waits visibly, and a length where the reply should be
+
+The owner's report was precise and correct: **"the bridge was still transcribing after six attempts"** —
+the device's own give-up message — with the instruction to add a thinking state and wait for the result.
+
+### Three timeouts that did not agree
+
+The wait was six attempts with a 400 ms gap: about three seconds. A recognition request is a network round
+trip through a provider, so several seconds is normal, and the device was giving up on bridges that were
+still working. Making the wait longer, however, exposed the second half of the problem: the **per-request
+timeout was eight seconds**, so a bridge that held the request open — as a well-behaved one should, rather
+than answering "not ready" and making the device poll — was aborted by the device's own client just before
+it answered. Measured on hardware, with the bridge deliberately slowed by eight seconds:
+
+```text
+bridge: transcription delayed by 8.0 s for testing
+bridge: GET /voice/transcript -> 'which branch should I deploy'      (answered, correctly)
+device: last="transcript fetch returned HTTP -1"                     (timed out waiting for it)
+```
+
+Three numbers now agree, and they are written down where they can be checked against each other:
+
+| | value | why |
+| --- | --- | --- |
+| per request | 15 s | the longest a bridge may hold one request |
+| between attempts | 0.5 s | the gap after a bridge says "not ready" |
+| in total | 30 s | after which the turn fails with the number of seconds it waited |
+
+And the bridge holds its answer for 12 s, deliberately shorter than the device's per-request timeout, so a
+provider that is merely slow is answered inside the request the device already has open. Verified with the
+same eight-second provider: the turn completes, the transcript arrives, the model answers.
+
+The wait is also **visible** now, which is what the owner asked for: the screen shows a thinking line and
+the pet's `THINKING` mood from the moment the audio is delivered until the transcript arrives. A wait
+nobody can see is indistinguishable from a hang, and the previous code showed nothing at all — the audio
+was delivered, the log said so, and the panel sat on whatever it had said before.
+
+### A length where the reply should be
+
+Testing that fix turned up a separate, pre-existing defect, and it is worth writing down exactly:
+
+```text
+screen: 你好！(Nǐ hǎo!)                 the model's answer, correct, on the panel
+bridge: GET /speak raw='text=%14'        a single byte, value twenty
+```
+
+Twenty is the byte length of that answer. The speaker was handed a **number** where the string should have
+been, and it built a request out of it, so the device asked a provider to synthesize a control character.
+It is **intermittent**: the same command in the next run sent the whole sentence correctly, percent-encoded
+and all. An intermittent wrong value in a fixed buffer is the signature of something writing past the end
+of a neighbouring allocation; the reply buffer is one of two allocated together, and a first step is to
+stop handing out whatever `malloc` left there:
+
+- both chat buffers are cleared at allocation, so an unwritten reply is empty rather than garbage;
+- the speaker refuses a reply whose first byte is a control character, logs the byte and the length, and
+  says so instead of sending nonsense to a provider.
+
+The root cause is not yet identified and is recorded as open. It was found by checking the wire bytes
+rather than trusting either end, which is the same discipline that turned the previous session's log
+encoding into a non-event.
+
+---
+
 ## 2026-10-15 — Session 40: the bridge with a real key, and both directions verified
 
 The owner supplied a SiliconFlow key, so the stand-in answers could be replaced with real ones. The

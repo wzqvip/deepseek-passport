@@ -35,6 +35,21 @@ static const char *TAG = "passport_speech";
 #define RESPONSE_MAX 1024
 #define SPEECH_STACK 6144
 
+// How long to keep asking for a transcript before giving up on it.
+//
+// Three numbers that have to agree with each other and with the bridge. A transcription is a provider
+// round trip, and a well-behaved bridge holds this request open until it has an answer rather than
+// replying "not ready": so a single request may legitimately take many seconds, and a per-request timeout
+// of eight seconds — which is what this used to be — aborts a request that is about to succeed. The
+// owner saw exactly that, after seeing the device give up on a bridge that was still working.
+//
+//   per request  15 s   the longest a bridge may hold one request (its own hold is shorter)
+//   between them  0.5 s the gap after a bridge says "not ready" and is polled again
+//   in total     30 s   after which the turn fails with the number of seconds it waited
+#define TRANSCRIPT_TIMEOUT_MS 15000u
+#define TRANSCRIPT_GAP_MS     500
+#define TRANSCRIPT_BUDGET_MS  30000
+
 static TaskHandle_t s_task;
 static volatile bool s_running;
 static volatile bool s_held;        // the button is down right now
@@ -343,6 +358,11 @@ static int stream_turn(void)
     // socket, while reusing the plain request path that is already proven on this device.
     ESP_LOGI(TAG, "音频已送达(%u KB),去取转写", (unsigned)(bytes / 1024u));
 
+    // Say what is happening while it happens. Transcribing is a request to a service now, not a local
+    // computation, and the gap between "the audio is delivered" and "here is the text" is seconds long:
+    // leaving the screen on the previous line makes a working device look like a hung one.
+    passport_app_show_status("正在转写…", PASSPORT_PET_THINKING);
+
     static char text[PASSPORT_WORK_QUESTION_MAX];
     const int transcribed = fetch_transcript(text, sizeof(text));
     if (transcribed != 200) {
@@ -366,15 +386,20 @@ static int fetch_transcript(char *out, size_t out_size)
     char url[192];
     snprintf(url, sizeof(url), "%s/voice/transcript", cfg->bridge_url);
 
-    // Transcription takes a moment on a real bridge, so a few attempts are made rather than one.
-    for (int attempt = 0; attempt < 6; attempt++) {
+    // Transcription takes a moment on a real bridge, and "a moment" was once six attempts with a 400 ms
+    // gap — about three seconds, which a real service disproved. A recognition request is a network
+    // round trip through a provider and several seconds is normal rather than exceptional, so the wait
+    // is now a budget of thirty seconds, and the caller puts a thinking face on the screen for the
+    // duration, because a wait nobody can see is indistinguishable from a failure.
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)TRANSCRIPT_BUDGET_MS * 1000;
+    while (esp_timer_get_time() < deadline_us) {
         static char body[512];
         passport_http_result_t result;
         const passport_http_request_t request = {
             .url = url,
             .api_key = (cfg->bridge_token[0] != '\0') ? cfg->bridge_token : NULL,
             .body = NULL,
-            .timeout_ms = 8000u,
+            .timeout_ms = TRANSCRIPT_TIMEOUT_MS,
         };
         const esp_err_t err = passport_http_request(&request, &result, body, sizeof(body));
         if (err != ESP_OK) {
@@ -395,7 +420,7 @@ static int fetch_transcript(char *out, size_t out_size)
         // is still working, which is the case that matters.
         const bool ready = !present || ready_value != 0;
         if (!ready) {
-            vTaskDelay(pdMS_TO_TICKS(400));
+            vTaskDelay(pdMS_TO_TICKS(TRANSCRIPT_GAP_MS));
             continue;
         }
         {
@@ -413,9 +438,11 @@ static int fetch_transcript(char *out, size_t out_size)
             snprintf(s_last, sizeof(s_last), "bridge returned an empty transcript");
             return -3;
         }
-        vTaskDelay(pdMS_TO_TICKS(400));
     }
-    snprintf(s_last, sizeof(s_last), "the bridge was still transcribing after six attempts");
+    // Say how long it waited, in the terms the owner experiences: the number is the point of the
+    // message, and the old one ("after six attempts") described the loop instead of the wait.
+    snprintf(s_last, sizeof(s_last), "still transcribing after %u seconds",
+             (unsigned)(TRANSCRIPT_BUDGET_MS / 1000u));
     return -4;
 }
 
@@ -436,6 +463,19 @@ static esp_err_t speak_text(const char *reply)
     }
     if (cfg->bridge_url[0] == '\0' || passport_wifi_state() != PASSPORT_WIFI_CONNECTED) {
         return ESP_ERR_INVALID_STATE;
+    }
+
+    // A reply that starts with a control byte is not text, whatever produced it.
+    //
+    // Observed on hardware: the console showed the model's answer correctly — a Chinese sentence, twenty
+    // bytes long — and the request that reached the bridge carried `text=%14`, a single byte of value
+    // twenty. That is the answer's *length*, where the answer should have been, so something handed this
+    // function a number instead of a string. Rather than build a URL out of it and make the provider
+    // synthesize a click, say so with the evidence: the first bytes and the length.
+    if ((unsigned char)reply[0] < 0x20u) {
+        ESP_LOGW(TAG, "回复不像文本(首字节 0x%02X, 长度 %u);不朗读",
+                 (unsigned char)reply[0], (unsigned)strlen(reply));
+        return ESP_ERR_INVALID_ARG;
     }
 
     // A long answer is spoken as a bounded prefix. Speaking a kilobyte of Chinese would be half a

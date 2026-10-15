@@ -177,6 +177,11 @@ esp_err_t passport_chat_start(void)
         ESP_LOGE(TAG, "对话缓冲分配失败");
         return ESP_ERR_NO_MEM;
     }
+    // Cleared, because this buffer is read by callers whenever they like — the speaker reads it after a
+    // turn — and handing out whatever malloc happened to leave there is how a device ends up speaking a
+    // number. An empty string is at least honestly empty.
+    s_response[0] = '\0';
+    s_answer[0] = '\0';
 
     s_queue = xQueueCreate(CHAT_QUEUE_DEPTH, sizeof(chat_request_t));
     if (s_queue == NULL) {

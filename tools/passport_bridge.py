@@ -44,6 +44,7 @@ import re
 import struct
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -63,9 +64,20 @@ STATE = {
     "audio": bytearray(),    # the most recent upload
     "transcript": "",
     "ready": False,
+    # Set when the current recording has been transcribed. /voice/transcript waits on it, so the device
+    # gets its answer as soon as there is one instead of asking repeatedly.
+    "done": threading.Event(),
     "status": {"task": "waiting for a task", "state": "idle", "progress": -1},
 }
 LOCK = threading.Lock()
+
+# How long /voice/transcript may hold a request waiting for the transcription.
+#
+# Deliberately shorter than the device's per-request timeout (15 s), so a provider that is merely slow is
+# answered inside the request the device already has open instead of the device timing out on a request
+# that was about to succeed — which is exactly what happened when the device's timeout was eight seconds
+# and this hold was longer.
+WAIT_FOR_TRANSCRIPT_S = 12.0
 
 
 def log(message):
@@ -357,6 +369,11 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:
             pcm = bytes(STATE["audio"])
             STATE["ready"] = False
+            STATE["done"].clear()
+        if self.server.slow_transcription_s:
+            # A deliberately slow provider, for testing that the device waits rather than giving up.
+            log(f"  (transcription delayed by {self.server.slow_transcription_s:.1f} s for testing)")
+            time.sleep(self.server.slow_transcription_s)
         try:
             text = self.provider.transcribe(pcm_to_wav(pcm))
         except Exception as error:   # noqa: BLE001 - reported to the device as no transcript
@@ -366,6 +383,7 @@ class Handler(BaseHTTPRequestHandler):
             STATE["transcript"] = text
             STATE["ready"] = True
             STATE["audio"].clear()
+            STATE["done"].set()      # releases whatever is waiting on /voice/transcript
         log(f"  transcript: {text!r}")
 
     # --- what the device asks for -------------------------------------------
@@ -373,14 +391,19 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0].rstrip("/")
 
         if path == "/voice/transcript":
+            # Hold the request until the transcription finishes, rather than answering "not ready" and
+            # making the device poll. The device does poll, and patiently, but a transcription is
+            # seconds of work at a provider and there is no reason to answer before it is done: the wait
+            # costs one thread and removes a whole class of races where the answer arrives between two
+            # polls.
+            if not STATE["done"].wait(timeout=WAIT_FOR_TRANSCRIPT_S):
+                log(f"GET /voice/transcript -> not ready after {WAIT_FOR_TRANSCRIPT_S:.0f} s")
+                self._json({"ready": 0, "text": ""})
+                return
             with LOCK:
                 # `ready` is an integer, not true/false: the device reads it with an integer reader.
-                payload = {"ready": 1 if STATE["ready"] else 0, "text": STATE["transcript"]}
-                if STATE["ready"]:
-                    STATE["ready"] = False   # one transcript per turn
-                    log(f"GET /voice/transcript -> {STATE['transcript']!r}")
-                else:
-                    log("GET /voice/transcript -> not ready yet")
+                payload = {"ready": 1, "text": STATE["transcript"]}
+                log(f"GET /voice/transcript -> {STATE['transcript']!r}")
             self._json(payload)
             return
 
@@ -520,6 +543,8 @@ def main():
                         help="round-trip speech synthesis and recognition once, then exit")
     parser.add_argument("--work-status", default="",
                         help="a fixed document for the work screen, instead of reading " + STATUS_FILE)
+    parser.add_argument("--stt-delay", type=float, default=0.0,
+                        help="pretend the provider is this slow, to check the device keeps waiting")
     args = parser.parse_args()
 
     Handler.provider = build_provider(args)
@@ -530,6 +555,7 @@ def main():
         return
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server.slow_transcription_s = args.stt_delay
     log(f"passport bridge on http://{args.host}:{args.port} using '{Handler.provider.name}'")
     log(f"  point the device at it:  config set bridge_url http://<this host>:{args.port}")
     log(f"  work screen document:    {args.work_status or STATUS_FILE + ' (if it exists)'}")
