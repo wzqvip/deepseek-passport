@@ -43,9 +43,9 @@ Two fixes, one at each end, because either alone leaves the trap:
 - **The bridge no longer invents a status.** Its `/work-status` answers 404 when there is nothing to
   report, instead of a cheerful idle document whose only effect was to take over a pet's screen.
 
-The work screen already said how to leave (`UP/DOWN 选择  OK 确认  长按OK 返回`), which is what a person
-who lands there needs — and the owner, reasonably, had not read it as an instruction about the button they
-were holding.
+The work screen already said how to leave — a line offering UP/DOWN to choose, OK to confirm and a long OK
+to go back — which is what a person who lands there needs, and the owner, reasonably, had not read it as an
+instruction about the button they were holding.
 
 ### The device had also lost its network, and refused turns silently
 
