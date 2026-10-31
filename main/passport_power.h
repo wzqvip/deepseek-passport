@@ -1,11 +1,7 @@
 // main/passport_power.h
-// Standby: turning the screen off when nobody is there, and sleeping deeply when asked.
-//
-// The wake side of this already existed: waking by key reboots the chip with that key still held,
-// which is why key_guard swallows key actions until the press comes up, and why the BSP must hand
-// the button pin back as a plain digital input before sleeping — with the ADC still driving it the
-// pin reads low, which is exactly the level the wake condition tests, so the device would wake
-// instantly. This module is the missing half: deciding when to sleep and going there.
+// Connected standby: only the backlight turns off; networking and input remain
+// alive. Deep sleep is deliberately refused until all shared-resource producers
+// have a stop/join and reject-new-work lifecycle.
 #pragma once
 
 #include <stdbool.h>
@@ -29,11 +25,15 @@ void passport_power_tick(void);
 bool passport_power_screen_on(void);
 uint32_t passport_power_idle_seconds(void);
 
-// Enter deep sleep, waking when a key is pressed.
-//
-// `timer_wake_seconds` arms a timer wake as well. Zero means "only the key", which is the shipping
-// behaviour; a non-zero value is a safety net for testing, so a device cannot be left asleep by a
-// mistake. Returns only on failure: on success the chip does not come back to this function.
+// Turn off only the backlight until the next activity; no peripheral teardown.
+// Safe during recording/playback/network work. Does not claim deep-sleep current.
+void passport_power_standby(void);
+
+// Currently returns ESP_ERR_NOT_SUPPORTED without mutating hardware or wake
+// sources, regardless of timer_wake_seconds. A speech busy snapshot is NOT a
+// resource-quiescence barrier. Do not restore terminal BSP shutdown until input,
+// battery, audio, networking, provisioning and LVGL producers are stopped/joined
+// and new work is excluded; failures after terminal prepare cannot return live.
 esp_err_t passport_power_sleep(uint32_t timer_wake_seconds);
 
 // Describe the standby state for the console.

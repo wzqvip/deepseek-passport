@@ -1,6 +1,8 @@
 idf_component_register(
     SRCS "main.c"
          "passport_app.c"
+         "passport_navigation.c"
+         "passport_provider.c"
          "passport_audio.c"
          "passport_audio_arbiter.c"
          "passport_pet.c"

@@ -2,6 +2,10 @@
 #include "passport_speech.h"
 
 #include <stdio.h>
+#include <stdlib.h>
+#include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
+#include "passport_provider.h"
 #include <string.h>
 
 #include "esp_http_client.h"
@@ -20,7 +24,7 @@
 #include "passport_utf8.h"
 
 // fetch_transcript() is defined after stream_turn() uses it.
-static int fetch_transcript(char *out, size_t out_size);
+static int fetch_transcript(const char *turn_id, char *out, size_t out_size);
 
 static const char *TAG = "passport_speech";
 
@@ -33,7 +37,7 @@ static const char *TAG = "passport_speech";
 #define MAX_CHUNKS ((MAX_SECONDS * 16000u) / CHUNK_SAMPLES)
 // The response is a small JSON object with a transcript in it.
 #define RESPONSE_MAX 1024
-#define SPEECH_STACK 6144
+#define SPEECH_STACK 12288
 
 // How long to keep asking for a transcript before giving up on it.
 //
@@ -51,6 +55,11 @@ static const char *TAG = "passport_speech";
 #define TRANSCRIPT_BUDGET_MS  30000
 
 static TaskHandle_t s_task;
+static portMUX_TYPE s_intent_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_turn_active;
+static volatile bool s_cancelled;
+static bool s_speak_pending;
+static char s_speak_request[192];
 static volatile bool s_running;
 static volatile bool s_held;        // the button is down right now
 static volatile bool s_started;     // a turn has been asked for and not yet run
@@ -106,27 +115,45 @@ static void wake(void)
 
 void passport_speech_talk_down(void)
 {
-    if (s_running && passport_voice_busy(&s_voice)) {
+    taskENTER_CRITICAL(&s_intent_lock);
+    if (s_turn_active || s_started || s_speak_pending) {
+        taskEXIT_CRITICAL(&s_intent_lock);
         // A press while an answer is being spoken is refused by the turn rules, not queued; saying
         // so once is more useful than silently ignoring it.
         ESP_LOGI(TAG, "回答中,忽略这次按下(半双工:要打断应先取消)");
         return;
     }
+    s_cancelled = false;
     s_press_us = esp_timer_get_time();
     s_held = true;
     s_started = true;
     s_release_early = false;
+    taskEXIT_CRITICAL(&s_intent_lock);
     wake();
 }
 
 void passport_speech_talk_up(void)
 {
     ESP_LOGI(TAG, "talk_up(按键抬起): held %d -> 0", (int)s_held);
+    taskENTER_CRITICAL(&s_intent_lock);
     s_held = false;
-    if (!s_started) {
+    if (s_started) {
         // Released before the worker began: remember it, or the turn would never end.
         s_release_early = true;
     }
+    taskEXIT_CRITICAL(&s_intent_lock);
+    wake();
+}
+
+void passport_speech_talk_cancel(void)
+{
+    taskENTER_CRITICAL(&s_intent_lock);
+    s_cancelled = true;
+    s_held = false;
+    s_started = false;
+    s_speak_pending = false;
+    s_release_early = false;
+    taskEXIT_CRITICAL(&s_intent_lock);
     wake();
 }
 
@@ -160,6 +187,96 @@ void passport_speech_report(char *out, size_t out_size)
              s_last, s_last_transcript);
 }
 
+// A short write is legal. Never advance to another frame until all bytes are sent.
+static bool write_all(esp_http_client_handle_t client, const void *data, size_t len)
+{
+    const char *p = data;
+    const int64_t deadline = esp_timer_get_time() + 30000000;
+    while (len) {
+        if (s_cancelled) return false;
+        if (esp_timer_get_time() >= deadline) return false;
+        int n = esp_http_client_write(client, p, (int)len);
+        if (n <= 0) return false;
+        p += n; len -= (size_t)n;
+    }
+    return true;
+}
+
+// Direct upload uses known Content-Length and a valid WAV, never a 30-second heap allocation.
+static int direct_turn(void)
+{
+    const passport_config_t *cfg = passport_config_current();
+    char url[192], prefix[384];
+    if (passport_wifi_state() != PASSPORT_WIFI_CONNECTED ||
+        !passport_provider_endpoint(cfg->stt_base_url, "/audio/transcriptions", url, sizeof(url)) ||
+        !passport_provider_stt_prefix(cfg->stt_model, prefix, sizeof(prefix))) {
+        snprintf(s_last, sizeof(s_last), "invalid direct STT configuration/network");
+        return -1;
+    }
+    size_t cap = passport_provider_record_capacity(
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    int16_t *pcm = cap ? malloc(cap) : NULL;
+    if (!pcm) { snprintf(s_last,sizeof(s_last),"STT low RAM; use bridge or retry"); return -1; }
+    ESP_LOGI(TAG, "Direct STT recording limit: %u ms", (unsigned)(cap / 32));
+    char limit_text[48];
+    snprintf(limit_text, sizeof(limit_text), "REC max %u.%u s", (unsigned)(cap/32000),
+             (unsigned)((cap%32000)/3200));
+    passport_app_show_status(limit_text, PASSPORT_PET_LISTENING);
+    size_t bytes = 0; unsigned peak = 0;
+    const int64_t capture_deadline = esp_timer_get_time() + 3500000;
+    while (s_held && bytes + 640 <= cap && esp_timer_get_time() < capture_deadline) {
+        passport_audio_level_t part = {0};
+        if (passport_audio_capture(pcm + bytes/2, CHUNK_SAMPLES, &part) != ESP_OK) {
+            free(pcm); snprintf(s_last,sizeof(s_last),"capture failed"); return -1;
+        }
+        if (part.peak > peak) peak = part.peak;
+        bytes += 640;
+    }
+    s_last_bytes = bytes; s_last_chunks = bytes / 640;
+    if (s_cancelled) { free(pcm); return -1; }
+    if (!bytes || peak < (unsigned)effective_gate()) { free(pcm); return -2; }
+    passport_app_show_status("正在转写…", PASSPORT_PET_THINKING);
+    uint8_t wav[44]; passport_provider_wav(wav, bytes);
+    const char *tail = passport_provider_stt_suffix();
+    const esp_http_client_config_t config = {
+        .url=url, .method=HTTP_METHOD_POST, .timeout_ms=15000,
+        .crt_bundle_attach=esp_crt_bundle_attach, .disable_auto_redirect=true,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&config);
+    if (!c) { free(pcm); snprintf(s_last,sizeof(s_last),"STT client allocation failed"); return -1; }
+    char auth[128]; snprintf(auth,sizeof(auth),"Bearer %s",cfg->stt_api_key);
+    esp_http_client_set_header(c,"Authorization",auth);
+    esp_http_client_set_header(c,"Content-Type","multipart/form-data; boundary=" PASSPORT_PROVIDER_BOUNDARY);
+    esp_err_t err=esp_http_client_open(c,(int)(strlen(prefix)+44+bytes+strlen(tail)));
+    bool sent=err==ESP_OK && write_all(c,prefix,strlen(prefix)) && write_all(c,wav,44) &&
+        write_all(c,pcm,bytes) && write_all(c,tail,strlen(tail));
+    free(pcm); // Release recording before parsing or starting another TLS request.
+    int status=0; char response[RESPONSE_MAX]; size_t used=0;
+    bool complete=false;
+    const int64_t deadline=esp_timer_get_time()+30000000;
+    if (sent && esp_http_client_fetch_headers(c)>=0) {
+        status=esp_http_client_get_status_code(c);
+        while(status==200 && used<sizeof(response)-1 && esp_timer_get_time()<deadline) {
+            int n=esp_http_client_read(c,response+used,(int)(sizeof(response)-1-used));
+            if(n<=0) { complete=n==0 && esp_http_client_is_complete_data_received(c); break; }
+            used+=(size_t)n;
+            if(esp_http_client_is_complete_data_received(c)) { complete=true; break; }
+        }
+    }
+    response[used]=0;
+    esp_http_client_close(c); esp_http_client_cleanup(c);
+    size_t decoded=0;
+    if(status!=200 || !complete || passport_json_string(response,used,"text",s_last_transcript,
+            sizeof(s_last_transcript),&decoded)!=PASSPORT_JSON_OK || !s_last_transcript[0]) {
+        s_last_transcript[0]=0;
+        snprintf(s_last,sizeof(s_last),"STT failed (HTTP %d/incomplete or empty response)",status);
+        return -1;
+    }
+    snprintf(s_last,sizeof(s_last),"direct STT %u bytes",(unsigned)bytes);
+    return 200;
+}
+
 // One chunk of a chunked body, framed by hand.
 //
 // Why by hand: esp_http_client declares `Transfer-Encoding: chunked` when it is opened with a
@@ -175,18 +292,18 @@ static bool write_chunk(esp_http_client_handle_t client, const void *data, size_
 {
     char header[16];
     const int header_len = snprintf(header, sizeof(header), "%x\r\n", (unsigned)len);
-    if (header_len <= 0 || esp_http_client_write(client, header, header_len) <= 0) {
+    if (header_len <= 0 || !write_all(client, header, (size_t)header_len)) {
         return false;
     }
-    if (len > 0u && esp_http_client_write(client, (const char *)data, (int)len) <= 0) {
+    if (len > 0u && !write_all(client, data, len)) {
         return false;
     }
-    return esp_http_client_write(client, "\r\n", 2) > 0;
+    return write_all(client, "\r\n", 2);
 }
 
 static bool write_body_end(esp_http_client_handle_t client)
 {
-    return esp_http_client_write(client, "0\r\n\r\n", 5) > 0;
+    return write_all(client, "0\r\n\r\n", 5);
 }
 
 // One streaming POST. Returns the status code, or a negative value on a transport failure.
@@ -316,6 +433,11 @@ static int stream_turn(void)
         return -2;
     }
 
+    if (s_cancelled) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return -1;
+    }
     // Terminate the chunked body before waiting for the answer: without this the server keeps
     // waiting for more chunks and the request never completes.
     if (!write_body_end(client)) {
@@ -325,11 +447,15 @@ static int stream_turn(void)
         return -1;
     }
 
-    // Read the answer directly rather than calling fetch_headers first. With a chunked request body
-    // the client's header fetch reports a transport failure here even though the upload arrived and
-    // the server answered; reading the data makes the client consume the response itself, and the
-    // status code is available afterwards. The upload path is unaffected either way — the bridge
-    // receives the same bytes — which is how this was narrowed down.
+    // Validate acceptance before polling this upload's explicit request ID.
+    if (esp_http_client_fetch_headers(client) < 0 ||
+        esp_http_client_get_status_code(client) != 202) {
+        snprintf(s_last, sizeof(s_last), "voice upload rejected (HTTP %d)",
+                 esp_http_client_get_status_code(client));
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return -1;
+    }
     static char response[RESPONSE_MAX];
     int total = 0;
     while (total < (int)sizeof(response) - 1) {
@@ -341,21 +467,18 @@ static int stream_turn(void)
         total += read;
     }
     response[total] = '\0';
+    const bool complete = esp_http_client_is_complete_data_received(client);
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
+    char turn_id[40];
+    size_t id_len = 0;
+    if (!complete || passport_json_string(response, (size_t)total, "turn_id", turn_id,
+            sizeof(turn_id), &id_len) != PASSPORT_JSON_OK || id_len != 32 ||
+        strspn(turn_id, "0123456789abcdef") != 32) {
+        snprintf(s_last, sizeof(s_last), "voice upload missing valid turn ID");
+        return -1;
+    }
 
-    // The upload's answer is not read, and there is a reason that is not the client's fault.
-    //
-    // An earlier version of this file called esp_http_client_fetch_headers() and compared its result
-    // with ESP_OK. It returns a *length* — a positive content length, 0 for a chunked body, -1 on
-    // error — so every response that had a body looked like a transport failure, and the conclusion
-    // drawn at the time was that this client cannot read a response after a chunked upload. That was
-    // wrong, and it is recorded here because the wrong conclusion is the more interesting part: a
-    // plausible-sounding limitation of someone else's code was in fact a misread signature.
-    //
-    // The two-request shape is kept anyway, for a reason that survives the correction: a real bridge
-    // may spend seconds transcribing, and a separate GET lets it take that time without holding this
-    // socket, while reusing the plain request path that is already proven on this device.
     ESP_LOGI(TAG, "音频已送达(%u KB),去取转写", (unsigned)(bytes / 1024u));
 
     // Say what is happening while it happens. Transcribing is a request to a service now, not a local
@@ -364,7 +487,7 @@ static int stream_turn(void)
     passport_app_show_status("正在转写…", PASSPORT_PET_THINKING);
 
     static char text[PASSPORT_WORK_QUESTION_MAX];
-    const int transcribed = fetch_transcript(text, sizeof(text));
+    const int transcribed = fetch_transcript(turn_id, text, sizeof(text));
     if (transcribed != 200) {
         return (transcribed < 0) ? transcribed : -5;
     }
@@ -378,13 +501,12 @@ static int stream_turn(void)
 // Ask the bridge for the transcript of the turn that was just uploaded.
 //
 // A separate request, so that a bridge which takes seconds to transcribe does not have to hold the
-// upload's socket open, and so that the answer comes back through the plain request path this device
-// has already proven. The bridge keeps the most recent transcript; a device has one turn at a time.
-static int fetch_transcript(char *out, size_t out_size)
+// upload's socket open. The explicit turn ID prevents a stale transcript from another upload.
+static int fetch_transcript(const char *turn_id, char *out, size_t out_size)
 {
     const passport_config_t *cfg = passport_config_current();
     char url[192];
-    snprintf(url, sizeof(url), "%s/voice/transcript", cfg->bridge_url);
+    snprintf(url, sizeof(url), "%s/voice/transcript?turn_id=%s", cfg->bridge_url, turn_id);
 
     // Transcription takes a moment on a real bridge, and "a moment" was once six attempts with a 400 ms
     // gap — about three seconds, which a real service disproved. A recognition request is a network
@@ -392,7 +514,7 @@ static int fetch_transcript(char *out, size_t out_size)
     // is now a budget of thirty seconds, and the caller puts a thinking face on the screen for the
     // duration, because a wait nobody can see is indistinguishable from a failure.
     const int64_t deadline_us = esp_timer_get_time() + (int64_t)TRANSCRIPT_BUDGET_MS * 1000;
-    while (esp_timer_get_time() < deadline_us) {
+    while (!s_cancelled && esp_timer_get_time() < deadline_us) {
         static char body[512];
         passport_http_result_t result;
         const passport_http_request_t request = {
@@ -411,6 +533,13 @@ static int fetch_transcript(char *out, size_t out_size)
             return result.status;
         }
 
+        char returned_id[40];
+        size_t returned_len = 0;
+        if (passport_json_string(body, passport_json_len(body), "turn_id", returned_id,
+                sizeof(returned_id), &returned_len) != PASSPORT_JSON_OK || strcmp(returned_id, turn_id)) {
+            snprintf(s_last, sizeof(s_last), "transcript turn ID mismatch");
+            return -1;
+        }
         bool present = false;
         const int ready_value = passport_json_int(body, passport_json_len(body), "ready", &present);
         // A missing "ready" counts as ready. The reader is an integer reader, so a bridge that
@@ -455,13 +584,36 @@ static int fetch_transcript(char *out, size_t out_size)
 //
 // A bridge without synthesis is not a failure: the reply is already on the screen, so a 404 or an
 // empty body just means the turn finishes quietly.
-static esp_err_t speak_text(const char *reply)
+typedef struct { bool seen; bool allowed; } speech_headers_t;
+static esp_err_t speech_header_event(esp_http_client_event_t *event)
+{
+    if (event->event_id == HTTP_EVENT_ON_HEADER && event->user_data && event->header_key) {
+        const char *key = event->header_key;
+        const char *expected = "content-type";
+        while (*key && *expected) {
+            char c = *key++;
+            if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+            if (c != *expected++) return ESP_OK;
+        }
+        if (!*key && !*expected) {
+            speech_headers_t *headers = event->user_data;
+            bool allowed = passport_provider_pcm_content_type(event->header_value);
+            headers->allowed = headers->seen ? headers->allowed && allowed : allowed;
+            headers->seen = true;
+        }
+    }
+    return ESP_OK;
+}
+
+static esp_err_t speak_text_impl(const char *reply)
 {
     const passport_config_t *cfg = passport_config_current();
+    if (s_cancelled) return ESP_ERR_INVALID_STATE;
     if (reply == NULL || reply[0] == '\0') {
         return ESP_ERR_INVALID_ARG;
     }
-    if (cfg->bridge_url[0] == '\0' || passport_wifi_state() != PASSPORT_WIFI_CONNECTED) {
+    const bool direct = cfg->tts_base_url[0] && cfg->tts_model[0];
+    if ((!direct && cfg->bridge_url[0] == '\0') || passport_wifi_state() != PASSPORT_WIFI_CONNECTED) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -501,22 +653,36 @@ static esp_err_t speak_text(const char *reply)
     char url[1024];
     snprintf(url, sizeof(url), "%s/speak?text=%s", cfg->bridge_url, encoded);
 
+    char body[1024];
+    if (direct && (!passport_provider_endpoint(cfg->tts_base_url, "/audio/speech", url, sizeof(url)) ||
+        !passport_provider_tts_body(cfg->tts_model,cfg->tts_voice,spoken,body,sizeof(body))))
+        return ESP_ERR_INVALID_ARG;
+    static speech_headers_t headers;
+    headers.seen = false;
+    headers.allowed = true;
     const esp_http_client_config_t config = {
         .url = url,
-        .method = HTTP_METHOD_GET,
-        .timeout_ms = 20000,
+        .method = direct ? HTTP_METHOD_POST : HTTP_METHOD_GET,
+        .timeout_ms = 15000,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .disable_auto_redirect = true,
+        .event_handler = speech_header_event,
+        .user_data = &headers,
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    if (cfg->bridge_token[0] != '\0') {
+    const char *key = direct ? cfg->tts_api_key : cfg->bridge_token;
+    if (key[0] != '\0') {
         char auth[160];
-        snprintf(auth, sizeof(auth), "Bearer %s", cfg->bridge_token);
+        snprintf(auth, sizeof(auth), "Bearer %s", key);
         esp_http_client_set_header(client, "Authorization", auth);
     }
 
-    esp_err_t err = esp_http_client_open(client, 0);
+    if (direct) esp_http_client_set_header(client,"Content-Type","application/json");
+    esp_err_t err = esp_http_client_open(client, direct ? (int)strlen(body) : 0);
+    if (err == ESP_OK && direct && !write_all(client,body,strlen(body))) err=ESP_FAIL;
     if (err != ESP_OK) {
         esp_http_client_cleanup(client);
         return err;
@@ -535,6 +701,20 @@ static esp_err_t speak_text(const char *reply)
         return (status == 404) ? ESP_ERR_NOT_FOUND : ESP_FAIL;
     }
 
+    if (s_cancelled) {
+        esp_http_client_close(client); esp_http_client_cleanup(client);
+        return ESP_ERR_INVALID_STATE;
+    }
+    // A 200 is not by itself audio. A JSON body, an MP3 or a WAV served by mistake would be played as
+    // PCM and come out of the speaker as noise, so the declared type is checked and an undeclared one
+    // is refused: only the raw little-endian formats this device can actually play are accepted.
+    if (!headers.seen || !headers.allowed) {
+        ESP_LOGW(TAG, "朗读响应不是原始 PCM(Content-Type %s),不播放",
+                 headers.seen ? "unsupported" : "missing");
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_ERR_INVALID_ARG;
+    }
     err = passport_audio_play_begin();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "音频通路被占用,无法朗读: %s", esp_err_to_name(err));
@@ -552,12 +732,17 @@ static esp_err_t speak_text(const char *reply)
     static int16_t samples_buf[CHUNK_SAMPLES];
     size_t pending = 0u;
     size_t played = 0u;
+    const int64_t deadline = esp_timer_get_time() + 60000000;
     for (;;) {
+        if (s_cancelled) { err=ESP_ERR_INVALID_STATE; break; }
+        if (esp_timer_get_time() >= deadline || played >= 16000u * 60u) { err=ESP_ERR_TIMEOUT; break; }
         const int read = esp_http_client_read(client, (char *)(raw + pending),
                                              (int)(sizeof(raw) - pending));
         if (read <= 0) {
+            if (read < 0 || !esp_http_client_is_complete_data_received(client) || pending) err=ESP_FAIL;
             break;
         }
+        if (s_cancelled) { err=ESP_ERR_INVALID_STATE; break; }
         const size_t total = pending + (size_t)read;
         const size_t whole = total / sizeof(int16_t);
         if (whole > 0u) {
@@ -584,14 +769,56 @@ static esp_err_t speak_text(const char *reply)
     snprintf(s_last, sizeof(s_last), "spoke %u KB (%u samples)",
              (unsigned)((played * sizeof(int16_t)) / 1024u), (unsigned)played);
     ESP_LOGI(TAG, "朗读完成:%u 个采样", (unsigned)played);
-    return (played > 0u) ? ESP_OK : ESP_FAIL;
+    return err != ESP_OK ? err : ((played > 0u) ? ESP_OK : ESP_FAIL);
+}
+
+// Serialize the static PCM buffers across CLI, notification, and speech callers.
+static portMUX_TYPE s_speak_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_speaking;
+static esp_err_t speak_text(const char *reply)
+{
+    taskENTER_CRITICAL(&s_speak_lock);
+    if (s_speaking) { taskEXIT_CRITICAL(&s_speak_lock); return ESP_ERR_INVALID_STATE; }
+    s_speaking=true;
+    taskEXIT_CRITICAL(&s_speak_lock);
+    esp_err_t result=speak_text_impl(reply);
+    taskENTER_CRITICAL(&s_speak_lock);
+    s_speaking=false;
+    taskEXIT_CRITICAL(&s_speak_lock);
+    return result;
 }
 
 // The public entry point, which the console uses to check playback without a spoken turn. `text` NULL
 // means the model's last answer.
 esp_err_t passport_speech_speak(const char *text)
 {
-    return speak_text((text != NULL) ? text : passport_chat_last_reply());
+    // Legacy entry point now accepts work rather than running TLS on caller stacks.
+    return passport_speech_request_speak(text);
+}
+
+esp_err_t passport_speech_request_speak(const char *text)
+{
+    char copy[192];
+    if (!s_task) return ESP_ERR_INVALID_STATE;
+    if (!text) {
+        esp_err_t err = passport_chat_copy_last_reply(copy, sizeof(copy));
+        if (err != ESP_OK) return err;
+    } else {
+        size_t n = passport_utf8_truncate(text, sizeof(copy)-1);
+        memcpy(copy, text, n); copy[n] = 0;
+    }
+    if (!copy[0]) return ESP_ERR_INVALID_ARG;
+    taskENTER_CRITICAL(&s_intent_lock);
+    if (s_turn_active || s_started || s_speak_pending) {
+        taskEXIT_CRITICAL(&s_intent_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_cancelled = false;
+    memcpy(s_speak_request, copy, sizeof(copy));
+    s_speak_pending = true;
+    taskEXIT_CRITICAL(&s_intent_lock);
+    wake();
+    return ESP_OK;
 }
 
 // Drive one whole turn. Runs on the speech task, so it may block.
@@ -613,11 +840,18 @@ static void run_turn(void)
     passport_app_show_status("听你说…", PASSPORT_PET_LISTENING);
     s_ui_us = esp_timer_get_time();
 
-    const int result = stream_turn();
+    s_last_transcript[0] = 0;
+    const passport_config_t *cfg = passport_config_current();
+    const int result = (cfg->stt_base_url[0] && cfg->stt_model[0]) ? direct_turn() : stream_turn();
 
     // The microphone is closed by now in every path, which is what the turn rules require before
     // the audio is interpreted.
     action = passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_TALK_RELEASE);
+    if (s_cancelled) {
+        passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_FAILED);
+        passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_RESET);
+        return;
+    }
     if (result == -1) {
         passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_FAILED);
         // Distinguish "this device has no network" from everything else, and say the first one in words
@@ -645,40 +879,46 @@ static void run_turn(void)
 
     passport_app_show_status("转写好了…", PASSPORT_PET_CURIOUS);
     action = passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_TRANSCRIPT);
-    if (action == PASSPORT_VOICE_ACT_ASK_MODEL) {
+    if (action == PASSPORT_VOICE_ACT_ASK_MODEL && !s_cancelled) {
         // The rest of the conversation is the path that already works, unchanged.
-        if (passport_chat_ask(s_last_transcript) != ESP_OK) {
+        uint32_t request_id = 0;
+        if (passport_chat_submit(s_last_transcript, &request_id) != ESP_OK) {
             passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_FAILED);
             passport_app_show_error("模型正忙");
             passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_RESET);
             return;
         }
 
-        // Wait for the answer, then close the turn. Without this the machine stays in THINKING for
-        // ever and the next press is refused as a turn already in flight — which is exactly what
-        // happened the first time a whole spoken turn completed.
-        //
-        // Speaking is not implemented yet, so the turn ends when the reply is on screen, and the
-        // machine is told both facts in order rather than being reset: the rule that the microphone
-        // is closed before anything is spoken holds either way, and when speech synthesis arrives it
-        // slots in between these two events.
-        for (int waited = 0; waited < 120 && passport_chat_busy(); waited++) {
-            vTaskDelay(pdMS_TO_TICKS(250));
+        char reply[1024];
+        esp_err_t completion = ESP_ERR_NOT_FINISHED;
+        const int64_t deadline = esp_timer_get_time() + 35000000;
+        while (!s_cancelled && completion == ESP_ERR_NOT_FINISHED && esp_timer_get_time() < deadline) {
+            completion = passport_chat_result(request_id, reply, sizeof(reply));
+            if (completion == ESP_ERR_NOT_FINISHED) vTaskDelay(pdMS_TO_TICKS(50));
         }
-        if (passport_chat_busy()) {
-            ESP_LOGW(TAG, "模型超过 30 秒未回答,结束这一回合");
+        if (s_cancelled || completion != ESP_OK) {
+            passport_chat_abandon(request_id);
             passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_FAILED);
             passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_RESET);
-            return;
+            if (!s_cancelled) passport_app_show_error("Model request failed or timed out");
+            return; // Never synthesize a previous request's reply after failure/timeout.
         }
         passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_REPLY);
         // The reply is on the screen by now; asking the bridge to say it is what closes the turn.
         // The state machine insists the microphone is shut before this, and the arbiter enforces it.
-        if (speak_text(passport_chat_last_reply()) != ESP_OK) {
+        esp_err_t spoken = speak_text(reply);
+        if (spoken != ESP_OK) {
             ESP_LOGI(TAG, "这一回合只上屏不发声");
+            if (!s_cancelled) passport_app_show_error("Speech failed; reply retained");
         }
         passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_SPEECH_DONE);
-        snprintf(s_last, sizeof(s_last), "turn finished: said \"%s\"", s_last_transcript);
+        snprintf(s_last, sizeof(s_last), "%s", s_cancelled ? "turn cancelled" :
+                 (spoken == ESP_OK ? "turn completed with speech" : "reply ready; speech failed"));
+    }
+    // Cancellation between TRANSCRIPT and model admission must not strand THINKING.
+    if (s_cancelled) {
+        passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_FAILED);
+        passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_RESET);
     }
 }
 
@@ -692,13 +932,30 @@ static void speech_task(void *arg)
         if (!s_running) {
             break;
         }
-        if (s_release_early && !s_started) {
-            s_release_early = false;
-            continue;
+        char spoken[192];
+        taskENTER_CRITICAL(&s_intent_lock);
+        bool do_speak = s_speak_pending;
+        bool do_turn = s_started;
+        if (do_speak) {
+            memcpy(spoken, s_speak_request, sizeof(spoken));
+            s_speak_pending = false;
         }
-        if (s_started && (s_held || s_release_early)) {
+        s_turn_active = do_speak || do_turn;
+        taskEXIT_CRITICAL(&s_intent_lock);
+        if (do_speak) {
+            esp_err_t err = speak_text(spoken);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "Queued speech failed: %s", esp_err_to_name(err));
+                snprintf(s_last, sizeof(s_last), "%s", s_cancelled ? "speech cancelled" : "speech failed");
+                if (!s_cancelled) passport_app_show_error("Speech failed");
+            }
+        } else if (do_turn) {
             run_turn();
         }
+        taskENTER_CRITICAL(&s_intent_lock);
+        s_turn_active = false;
+        s_release_early = false;
+        taskEXIT_CRITICAL(&s_intent_lock);
     }
     s_task = NULL;
     vTaskDelete(NULL);

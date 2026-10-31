@@ -7,6 +7,8 @@
 //   确定 短按   宠物回应(开心一阵)
 //   确定 长按   待机预览开/关(真正的电源管理属于后续里程碑)
 //   上/下 短按  切换宠物表情,便于用串口控制台逐一核对素材
+#include <stdatomic.h>
+
 #include "bsp_i2c.h"
 #include "bsp_display.h"
 #include "bsp_button.h"
@@ -44,13 +46,23 @@ typedef struct {
 static QueueHandle_t s_input_queue;
 static TaskHandle_t s_input_task;
 static volatile bool s_input_ready;
+static atomic_bool s_input_overflow;
+
+static bool input_recover_overflow(void) {
+    if (!atomic_exchange(&s_input_overflow, false)) return false;
+    // The sequence is broken; no queued click/long/release can be trusted.
+    xQueueReset(s_input_queue);
+    passport_app_cancel_input();
+    return true;
+}
 
 static void input_task(void *arg) {
     (void)arg;
     input_event_t input;
     for (;;) {
-        if (xQueueReceive(s_input_queue, &input, portMAX_DELAY) == pdTRUE) {
-            passport_app_key(input.btn, input.event);
+        if (input_recover_overflow()) continue;
+        if (xQueueReceive(s_input_queue, &input, pdMS_TO_TICKS(50)) == pdTRUE) {
+            if (!input_recover_overflow()) passport_app_key(input.btn, input.event);
         }
     }
 }
@@ -58,11 +70,8 @@ static void input_task(void *arg) {
 static esp_err_t input_dispatch_init(void) {
     s_input_queue = xQueueCreate(INPUT_QUEUE_DEPTH, sizeof(input_event_t));
     if (!s_input_queue) return ESP_ERR_NO_MEM;
-    // Sized for what a key press can end up doing, not for the queue plumbing. Holding UP
-    // builds the setup screen, and building it encodes a QR symbol, which costs roughly
-    // six kilobytes of stack between the encoder's working copy and the builder's module
-    // map. At 4096 the press overflowed the stack and the device rebooted, which looked
-    // like the access point switching itself off.
+    // Input routes gestures and renders lightweight pages. QR encoding and slow
+    // settings/work operations run on the app worker, not this stack.
     if (xTaskCreate(input_task, "passport_input", 6144, NULL, 5, &s_input_task) != pdPASS) {
         vQueueDelete(s_input_queue);
         s_input_queue = NULL;
@@ -96,7 +105,9 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
     }
     if (!s_input_ready || !s_input_queue) return;
     const input_event_t input = { .btn = btn, .event = ev };
-    (void)xQueueSend(s_input_queue, &input, 0);
+    if (xQueueSend(s_input_queue, &input, 0) != pdTRUE) {
+        atomic_store(&s_input_overflow, true);
+    }
 }
 
 // Injected events from the serial console enter the same queue as a physical
@@ -104,7 +115,9 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
 static void passport_cli_inject(bsp_btn_t btn, bsp_btn_ev_t ev) {
     if (!s_input_ready || !s_input_queue) return;
     const input_event_t input = { .btn = btn, .event = ev };
-    (void)xQueueSend(s_input_queue, &input, 0);
+    if (xQueueSend(s_input_queue, &input, 0) != pdTRUE) {
+        atomic_store(&s_input_overflow, true);
+    }
 }
 
 void app_main(void) {

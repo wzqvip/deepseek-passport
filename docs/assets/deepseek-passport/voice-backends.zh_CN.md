@@ -9,6 +9,29 @@
 
 调研日期：2026-10-13。**提供商名称、价格和端点形态变化频繁，实施前必须重新核对。** 下文每一处价格都仅为指示性价格。
 
+## 当前实现——2026-10-31
+
+下方旧调研是背景，不是真机完成的证据。固件现在以非空 `stt_base_url` + `stt_model` 选择直连
+multipart WAV STT，以非空 `tts_base_url` + `tts_model` + `tts_voice` 选择直连 PCM TTS。
+密钥分别使用 `stt_api_key` 与 `tts_api_key`。未配置直连时保留中继路径；直连失败不会静默改走
+另一付费提供商重试。语言模型继续使用独立的 `llm_*` 配置。
+
+硅基流动配置：两个 base 均为 `https://api.siliconflow.cn/v1`；STT 模型
+`FunAudioLLM/SenseVoiceSmall`，TTS 模型 `FunAudioLLM/CosyVoice2-0.5B`，音色例如
+`FunAudioLLM/CosyVoice2-0.5B:anna`。通过设备配置界面私下设置秘密，不要放入仓库。
+请求形态已核对官方 [STT](https://docs.siliconflow.com/en/api-reference/audio/create-audio-transcriptions.md)
+与 [TTS](https://docs.siliconflow.com/en/api-reference/audio/create-speech.md) 文档；兼容性、音质仍需真实服务和真机验证。
+
+**直连录音有意限制为最多三秒／96KB PCM**，并按实际可用堆进一步缩短，预留 80KB。
+不足半秒录音空间时拒绝请求，屏幕显示实际时间上限。这是短句增量，不等于长自然对话已完成：
+30 秒 PCM 需要 960KB，而板上无 PSRAM、无录音分区。未改分区/NVS 结构，也不持久存录音。
+现有中继路径保留较长的流式录音。
+
+朗读命令统一在 speech worker 执行；接受命令只代表排队，不代表完成播放。
+回复与请求结果绑定，失败清除旧文本；宠物具有固定蓝鲸 persona 和一轮有界成功历史（不持久化）。
+直连 TTS 通过验证 TLS 流式接收 PCM16 单声道 16kHz，播放有界并拒绝传输失败/奇数字节样本。
+物理麦克风静音、音质、延迟、TLS 堆栈余量与提供商可达性仍未验证。
+
 ## 1. 决定设计的两个硬件事实
 
 | 事实 | 数值 | 后果 |

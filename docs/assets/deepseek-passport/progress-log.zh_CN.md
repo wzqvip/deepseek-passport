@@ -17,6 +17,43 @@
 
 ---
 
+## 2026-10-31 —— 源码审计与功能修复
+
+从 `7e005bf`、干净的 `feature/deepseek-passport` 工作区继续。没有把此前“语音/硬件全部完成”当作证据。
+源码确认了页面标志重叠、松手丢失、QR 生命周期问题、工作答案只写日志及请求结果竞态。
+[导航 reducer](../../../main/passport_navigation.c)统一管理页面与手势；
+[应用](../../../main/passport_app.c)排队执行慢操作、保留问题选择并显示异步失败。
+输入溢出取消损坏手势，不再让录音持续打开。
+
+[语音](../../../main/passport_speech.c)与[对话](../../../main/passport_chat.c)串行化意图、按请求绑定结果、
+拒绝旧答案，并提供固定 persona 与一轮有界历史。[提供商 helper](../../../main/passport_provider.c)
+实现直连 STT/TTS 请求；直连最多三秒，内存低时更短，见[语音后端](voice-backends.zh_CN.md)。
+实现期间未调用真实付费服务、未烧录设备。
+
+[中继](../../../tools/passport_bridge.py)增加认证、回合隔离和上传限制；
+[桌面伴侣](../../../tools/passport_work_companion.py)发布任务、获取带问题身份的答案。
+这不等于接入现有 DSH Web 会话。工作模式实际发送实体键答案，支持排队语音通知；音频忙时跳过通知，
+不打断录音。
+
+[电源](../../../main/passport_power.c)支持保持连接的熄背光待机。不安全的深睡销毁会在禁用任何生产者之前
+被拒绝，真正深睡仍未完成。此前“静音闸什么都不上传”的说法错误：中继录音先上传再本地判断。
+此前关于路由器限速及长度覆盖的推测没有确证。
+
+验证（最终）：静态门禁 PASS（`./tools/validate.sh --static`，390 份文档，全部主机 C 测试与全部
+Python 契约/集成用例）。Bash 的固件模式在本机无法运行——原生 ESP-IDF 拒绝 MSys 环境——因此用相同的
+build/merge/verify/archive 步骤在原生 PowerShell、全新配置目录 `build/validation-20261031` 中执行
+（门禁临时路径是 POSIX 路径故不能复用）。固件 PASS：应用 2,291,600 字节装入 8MB factory 分区，
+合并镜像 2,357,136 字节，布局校验通过，归档 `build/firmware/57e3686f…3afcd`
+（整镜像 SHA-256 `57e3686f…3afcd`，ELF `0a993f9a…612133`），并复制到
+`build/FoloToy-AI-Passport-full.bin`。
+
+最终构建过程本身发现并修复了两处缺陷，而非绕过：`lv_image_cache_drop` 只声明在 `lvgl.h` 未再导出的
+LVGL 内部头文件中（单独编译测试没能暴露），以及语音响应 Content-Type 检查只是**未接上的死代码**，
+JSON 或 MP3 响应本来会被当作 PCM 播放。
+Device tests NOT RUN；仅枚举到 COM47，没有打开/复位。
+剩余：实体导航/显示/声音/TLS 内存验收、更长直连语音、自动 DSH 镜像、完整本地化/偏好配置、安全深睡生命周期。
+不宣称产品全部完成。
+
 ## 2026-10-15 —— 第 43 次会话：设置菜单,是"进入"而不是"显示"
 
 主人要的是形态的改变,而不是一个功能:**按住一个键应当"进入"某个东西并留在那里**,而不是在手指按着的时候

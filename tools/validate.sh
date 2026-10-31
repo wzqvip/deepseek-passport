@@ -64,6 +64,14 @@ run_static_checks() {
         tests/test_passport_work.c main/passport_work.c main/passport_json.c \
         -o "${test_dir}/test_passport_work"
     "${test_dir}/test_passport_work"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_passport_navigation.c main/passport_navigation.c \
+        -o "${test_dir}/test_passport_navigation"
+    "${test_dir}/test_passport_navigation"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_passport_provider.c main/passport_provider.c \
+        -o "${test_dir}/test_passport_provider"
+    "${test_dir}/test_passport_provider"
     # -lm: the test checks the integer approximation against the library's sine; the firmware
     # itself uses no floating point.
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
@@ -106,6 +114,9 @@ run_static_checks() {
     # sleeping without shutting the board down first.
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_deep_sleep_contract.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_key_wake_contract.py
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_passport_chat_contract.py
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_passport_bridge.py
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_passport_work_companion.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_check_repo.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_verify_firmware.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_archive_firmware.py

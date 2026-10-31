@@ -68,6 +68,11 @@ bool passport_work_parse(const char *json, passport_work_view_t *view)
 
     read_text(json, len, "task", next.task, sizeof(next.task));
     read_text(json, len, "question", next.question, sizeof(next.question));
+    const passport_json_status_t id_status = passport_json_string(
+        json, len, "question_id", next.question_id, sizeof(next.question_id), NULL);
+    if (id_status != PASSPORT_JSON_OK && id_status != PASSPORT_JSON_NOT_FOUND) {
+        return false; // A truncated ID could answer a different question.
+    }
 
     char state_text[16];
     read_text(json, len, "state", state_text, sizeof(state_text));
@@ -113,6 +118,69 @@ bool passport_work_parse(const char *json, passport_work_view_t *view)
 
     *view = next;
     return true;
+}
+
+bool passport_work_same_question(const passport_work_view_t *a, const passport_work_view_t *b)
+{
+    if (a == NULL || b == NULL || a->state != b->state ||
+        strcmp(a->task, b->task) != 0 || strcmp(a->question_id, b->question_id) != 0 ||
+        strcmp(a->question, b->question) != 0 || a->option_count != b->option_count) {
+        return false;
+    }
+    for (int i = 0; i < a->option_count; ++i) {
+        if (strcmp(a->options[i], b->options[i]) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool append_json_string(const char *text, char *out, size_t cap, size_t *used)
+{
+    static const char hex[] = "0123456789abcdef";
+    if (*used + 1 >= cap) return false;
+    out[(*used)++] = '"';
+    for (const unsigned char *p = (const unsigned char *)text; *p; ++p) {
+        const size_t n = (*p < 0x20) ? 6u : ((*p == '"' || *p == '\\') ? 2u : 1u);
+        if (*used + n >= cap) return false;
+        if (*p < 0x20) {
+            out[(*used)++] = '\\'; out[(*used)++] = 'u';
+            out[(*used)++] = '0'; out[(*used)++] = '0';
+            out[(*used)++] = hex[*p >> 4]; out[(*used)++] = hex[*p & 15];
+        } else {
+            if (n == 2) out[(*used)++] = '\\';
+            out[(*used)++] = (char)*p;
+        }
+    }
+    if (*used + 1 >= cap) return false;
+    out[(*used)++] = '"';
+    out[*used] = '\0';
+    return true;
+}
+
+bool passport_work_answer_json(const char *question_id, const char *answer,
+                               char *out, size_t out_size)
+{
+    if (out == NULL || out_size == 0) return false;
+    out[0] = '\0';
+    if (answer == NULL || answer[0] == '\0' || out_size < 32) return false;
+    const char *id = question_id != NULL ? question_id : "";
+    size_t used = 0;
+    const char prefix[] = "{\"question_id\":";
+    memcpy(out, prefix, sizeof(prefix) - 1);
+    used = sizeof(prefix) - 1;
+    if (!append_json_string(id, out, out_size, &used)) goto fail;
+    const char middle[] = ",\"answer\":";
+    if (used + sizeof(middle) >= out_size) goto fail;
+    memcpy(out + used, middle, sizeof(middle) - 1);
+    used += sizeof(middle) - 1;
+    if (!append_json_string(answer, out, out_size, &used) || used + 1 >= out_size) goto fail;
+    out[used++] = '}';
+    out[used] = '\0';
+    return true;
+fail:
+    out[0] = '\0';
+    return false;
 }
 
 passport_work_announcement_t passport_work_announce(bool changed,

@@ -14,6 +14,7 @@
 #include "passport_app.h"
 
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -24,6 +25,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+// Not re-exported by lvgl.h: the QR descriptor hands LVGL a raw buffer from the system heap, so the
+// cached entry has to be dropped when that buffer goes away. See qr_release().
+#include "misc/cache/instance/lv_image_cache.h"
 #include "passport_audio.h"
 #include "passport_chat.h"
 #include "passport_config_store.h"
@@ -37,6 +41,8 @@
 #include "passport_utf8.h"
 #include "passport_wifi.h"
 #include "passport_work.h"
+#include "passport_work_client.h"
+#include "passport_navigation.h"
 
 static const char *TAG = "passport_app";
 
@@ -103,9 +109,21 @@ typedef enum {
     SETTINGS_ACT_STANDBY,
 } settings_act_t;
 
-static volatile settings_act_t s_settings_act;
-static bool s_settings_requested;
-static bool s_on_settings;
+static settings_act_t s_settings_act;
+static uint32_t s_settings_generation;
+static passport_navigation_t s_nav;
+static atomic_bool s_input_cancel_pending;
+
+// Caller holds the LVGL lock. Preserve recovery across failed lock attempts.
+static void apply_input_cancel(void)
+{
+    if (atomic_exchange(&s_input_cancel_pending, false)) {
+        (void)passport_navigation_cancel(&s_nav);
+        s_settings_act = SETTINGS_ACT_NONE;
+    }
+}
+static bool s_answer_pending;
+static passport_work_view_t s_answer_view;
 static lv_obj_t *s_settings;
 static lv_obj_t *s_settings_info;
 static lv_obj_t *s_settings_items[SETTINGS_ITEMS];
@@ -115,7 +133,7 @@ static lv_obj_t *s_mood;
 static lv_obj_t *s_hint;
 static TaskHandle_t s_task;
 static volatile bool s_running;
-static bool s_sleeping;
+
 
 // The setup screen. It exists because the hotspot credentials were otherwise only
 // readable over the serial console, which defeats the point of provisioning without a
@@ -124,10 +142,7 @@ static lv_obj_t *s_setup;
 static lv_obj_t *s_setup_hotspot;
 static lv_obj_t *s_setup_password;
 static lv_obj_t *s_setup_address;
-static bool s_on_setup;
-static bool s_on_work;
-// Set by the button task, acted on by the app worker: see the long-press-of-UP branch.
-static volatile bool s_setup_requested;
+// Page and gesture state are protected by the LVGL lock.
 
 // --- small LVGL helpers -----------------------------------------------------
 
@@ -334,62 +349,19 @@ static int qr_render(void)
     return side;
 }
 
-// Reserve the code's pixel buffer now, at start-up, rather than when the setup screen is first
-// built. Allocating it late split whatever large block remained and left only about 22 KB
-// contiguous, which is not enough for a snapshot of the same code — the verification tool was
-// starved by the thing it was trying to verify. Reserving first also matches the rule this
-// project follows elsewhere: allocate a hot buffer once.
-// The QR pixels are allocated when the setup screen opens and released when it closes.
-//
-// They used to be reserved once at boot, so that the verification could not be starved by the thing
-// it was trying to verify. That reasoning stopped paying for itself: the buffer is tens of kilobytes
-// — 32,768 of them for a 128-pixel code — and holding it for the life of the device left too little
-// contiguous heap for anything else. It was measured, not guessed: with the buffer held, the largest
-// free block at rest was 7,680 bytes, and `llm ask` failed with ESP_ERR_HTTP_CONNECT because a TLS
-// session could no longer be allocated. Provisioning and provider calls are never needed at the same
-// moment, so the pixels only need to exist while the screen that shows them does.
+// The QR pixels belong to the setup screen and are released only after its image
+// widget is deleted. Keeping them off the heap between visits leaves room for TLS.
 static void qr_release(void)
 {
     if (s_qr_pixels != NULL) {
+        // The image cache keys decoded images by their descriptor address, and this descriptor is
+        // reused for the next symbol. Dropping the entry before the pixels are freed is what stops
+        // a later draw from reading them. LVGL 9.5 declares this in an internal header that lvgl.h
+        // does not re-export, so the header is included by path where it lives in the component.
+        lv_image_cache_drop(&s_qr_dsc);
         heap_caps_free(s_qr_pixels);
         s_qr_pixels = NULL;
         s_qr_side = 0;
-    }
-}
-
-// Take the pixels for the join code *before* the access point starts.
-//
-// This is the reservation, back again, but only for the few milliseconds it is needed rather than for
-// the life of the device. Its original reasoning was right — the code cannot be retried if the
-// allocation fails, and the radio fragments what is left — and it was only the *duration* that cost
-// too much: held for ever, these tens of kilobytes left no room for a TLS session, which is how the
-// cost was found. Allocating it at the moment the setup screen is requested keeps both properties.
-static void qr_reserve(void)
-{
-    char payload[192];
-    qr_payload(payload, sizeof(payload));
-
-    passport_qr_t code;
-    if (!passport_qr_encode(payload, &code)) {
-        return;
-    }
-    const int modules = (int)code.size + 2 * QR_QUIET_ZONE;
-    int scale = QR_TARGET_SIDE / modules;
-    if (scale < 2) {
-        scale = 2;
-    }
-    const int side = modules * scale;
-    if (s_qr_pixels != NULL && s_qr_side == side) {
-        return;   // already the right size
-    }
-    qr_release();
-    s_qr_pixels = heap_caps_malloc((size_t)side * (size_t)side * sizeof(uint16_t),
-                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    s_qr_side = (s_qr_pixels != NULL) ? side : 0;
-    if (s_qr_pixels != NULL) {
-        ESP_LOGI(TAG, "二维码缓冲已就绪:%d 字节(%d 像素)", side * side * 2, side);
-    } else {
-        ESP_LOGE(TAG, "二维码缓冲分配失败(%d 字节)", side * side * 2);
     }
 }
 
@@ -467,9 +439,9 @@ static void build_setup(void)
     s_setup_password = label(s_setup, 10, y + 22, passport_font_body(), APP_PAPER, "password");
     s_setup_address = label(s_setup, 10, y + 44, passport_font_body(), APP_MUTED, "address");
 
-    plain(s_setup, 0, 232, 240, 3, APP_ACCENT);
-    lv_label_set_text(label(s_setup, 10, 244, passport_font_body(), APP_MUTED, "setup_back"),
-                      "OK: 返回");
+    plain(s_setup, 0, 268, 240, 3, APP_ACCENT);
+    lv_label_set_text(label(s_setup, 10, 272, passport_font_body(), APP_MUTED, "setup_back"),
+                      "长按OK 返回");
 
     setup_refresh();
 }
@@ -484,8 +456,22 @@ void passport_app_show_setup(void)
     }
     setup_refresh();
     lv_screen_load(s_setup);
-    s_on_setup = true;
+    passport_navigation_show(&s_nav, PASSPORT_PAGE_SETUP);
     bsp_lvgl_unlock();
+}
+
+// Delete the image widget before releasing its backing pixels; rebuild on re-entry.
+// Caller holds the LVGL lock and has already loaded another screen.
+static void setup_release(void)
+{
+    if (s_setup != NULL) {
+        lv_obj_delete(s_setup);
+        s_setup = NULL;
+        s_setup_hotspot = NULL;
+        s_setup_password = NULL;
+        s_setup_address = NULL;
+    }
+    qr_release();
 }
 
 void passport_app_show_home(void)
@@ -497,14 +483,9 @@ void passport_app_show_home(void)
         return;
     }
     lv_screen_load(s_screen);
-    s_on_setup = false;
-    s_on_work = false;
-    s_on_settings = false;
+    passport_navigation_show(&s_nav, PASSPORT_PAGE_HOME);
+    setup_release();
     bsp_lvgl_unlock();
-
-    // Leaving the setup screen releases the join code's pixels: see qr_release() for why they are
-    // not held for the life of the device.
-    qr_release();
 }
 
 // --- work screen ------------------------------------------------------------
@@ -622,7 +603,8 @@ void passport_app_show_work(void)
     }
     work_refresh();
     lv_screen_load(s_work);
-    s_on_work = true;
+    passport_navigation_show(&s_nav, PASSPORT_PAGE_WORK);
+    setup_release();
     bsp_lvgl_unlock();
 }
 
@@ -648,13 +630,13 @@ static void build_settings(void)
     // expires. This is the answer to "what address is it on?" and it is readable at leisure.
     s_settings_info = label(s_settings, 10, 34, passport_font_body(), APP_MUTED, "settings_info");
     lv_obj_set_width(s_settings_info, 222);
-    lv_obj_set_height(s_settings_info, 40);
+    lv_obj_set_height(s_settings_info, 60);
     lv_label_set_long_mode(s_settings_info, LV_LABEL_LONG_WRAP);
 
     for (int i = 0; i < SETTINGS_ITEMS; i++) {
         char name[24];
         snprintf(name, sizeof(name), "settings_item%d", i);
-        s_settings_items[i] = label(s_settings, 10, 86 + i * 34, passport_font_body(), APP_PAPER, name);
+        s_settings_items[i] = label(s_settings, 10, 102 + i * 34, passport_font_body(), APP_PAPER, name);
         lv_obj_set_width(s_settings_items[i], 222);
     }
 
@@ -671,7 +653,8 @@ static void settings_refresh(void)
         passport_wifi_ip(ip, sizeof(ip));
         char line[BUBBLE_MAX];
         if (ip[0] != '\0') {
-            snprintf(line, sizeof(line), "网络 %.18s · 地址 %.15s\n网页 http://%.15s/", cfg->wifi_ssid, ip, ip);
+            const int keep = (int)passport_utf8_truncate(cfg->wifi_ssid, 18);
+            snprintf(line, sizeof(line), "网络 %.*s\nhttp://%.15s/", keep, cfg->wifi_ssid, ip);
         } else {
             snprintf(line, sizeof(line), "未联网。进入\"网络与配网\"\n用手机连上它的热点");
         }
@@ -685,7 +668,12 @@ static void settings_refresh(void)
         // The selected row is marked by colour and by a caret, because colour alone is not a selection
         // on a 240-pixel panel held at arm's length in daylight.
         char text[64];
-        snprintf(text, sizeof(text), "%s%s", selected ? "> " : "   ", SETTINGS_LABELS[i]);
+        if (i == 1) {
+            snprintf(text, sizeof(text), "%s%s %u%%", selected ? "> " : "   ",
+                     SETTINGS_LABELS[i], (unsigned)passport_config_current()->brightness);
+        } else {
+            snprintf(text, sizeof(text), "%s%s", selected ? "> " : "   ", SETTINGS_LABELS[i]);
+        }
         lv_label_set_text(s_settings_items[i], text);
         lv_obj_set_style_text_color(s_settings_items[i], lv_color_hex(selected ? APP_ACCENT : APP_PAPER), 0);
     }
@@ -701,7 +689,8 @@ void passport_app_show_settings(void)
     }
     settings_refresh();
     lv_screen_load(s_settings);
-    s_on_settings = true;
+    passport_navigation_show(&s_nav, PASSPORT_PAGE_SETTINGS);
+    setup_release();
     bsp_lvgl_unlock();
 }
 
@@ -734,8 +723,7 @@ bool passport_app_work_feed(const char *json)
     // refreshed below either way, so looking at it always shows the latest.
     const bool changed = (strcmp(parsed.task, s_work_view.task) != 0) ||
                          (parsed.state != s_work_view.state) ||
-                         (strcmp(parsed.question, s_work_view.question) != 0) ||
-                         (parsed.option_count != s_work_view.option_count);
+                         !passport_work_same_question(&parsed, &s_work_view);
 
     // And "nothing is running" is not news either, whatever it says about the task.
     //
@@ -750,6 +738,10 @@ bool passport_app_work_feed(const char *json)
                                (parsed.state == PASSPORT_WORK_DONE) ||
                                (parsed.state == PASSPORT_WORK_FAILED);
 
+    if (passport_work_same_question(&parsed, &s_work_view)) {
+        parsed.selected = s_work_view.selected;
+        parsed.answered = s_work_view.answered;
+    }
     s_work_view = parsed;
     if (s_work == NULL) {
         build_work();
@@ -757,9 +749,9 @@ bool passport_app_work_feed(const char *json)
     // A document that arrives while the home screen is showing takes it over, the way a notification
     // would. It does not interrupt the setup screen: someone mid-provisioning should not be thrown out
     // of it by a background update.
-    if (!s_on_setup && changed && worth_showing) {
+    if (passport_navigation_accept_work(&s_nav, changed, worth_showing)) {
         lv_screen_load(s_work);
-        s_on_work = true;
+        passport_navigation_show(&s_nav, PASSPORT_PAGE_WORK);
     }
     work_refresh();
     bsp_lvgl_unlock();
@@ -768,13 +760,10 @@ bool passport_app_work_feed(const char *json)
 
 passport_work_action_t passport_app_work_press(passport_work_key_t key)
 {
+    if (!bsp_lvgl_lock(500)) return PASSPORT_WORK_ACT_NONE;
     const passport_work_action_t action = passport_work_key(&s_work_view, key);
-    if (action == PASSPORT_WORK_ACT_REDRAW) {
-        if (bsp_lvgl_lock(500)) {
-            work_refresh();
-            bsp_lvgl_unlock();
-        }
-    }
+    if (action == PASSPORT_WORK_ACT_REDRAW) work_refresh();
+    bsp_lvgl_unlock();
     return action;
 }
 
@@ -834,6 +823,11 @@ static void wifi_refresh(void)
 static void app_task(void *arg)
 {
     (void)arg;
+    // A completed HTTP operation must never be repeated just because UI locking
+    // timed out. Retain its result locally until it can be applied under the lock.
+    bool answer_result_ready = false;
+    esp_err_t answer_result = ESP_OK;
+    passport_work_view_t completed_answer;
 
     // No QR reservation here any more. The pixels are allocated when the setup screen opens, which
     // is a few milliseconds before the code is drawn, and released when it closes. Holding tens of
@@ -862,71 +856,91 @@ static void app_task(void *arg)
             if (waited % 1000 == 0) {
                 wifi_refresh();
             }
-            // The settings menu: built here, and everything it asks for done here, because none of it
-            // belongs on the button task — it encodes a join code, writes flash, or spends seconds
-            // talking to a bridge.
-            if (s_settings_requested) {
-                s_settings_requested = false;
-                passport_app_show_settings();
-            }
-            const settings_act_t act = s_settings_act;
-            if (act != SETTINGS_ACT_NONE) {
+            settings_act_t act = SETTINGS_ACT_NONE;
+            uint32_t generation = 0;
+            passport_work_view_t answer;
+            bool send_answer = false;
+            if (bsp_lvgl_lock(200)) {
+                apply_input_cancel();
+                if (answer_result_ready) {
+                    s_answer_pending = false;
+                    if (passport_work_same_question(&completed_answer, &s_work_view)) {
+                        if (answer_result != ESP_OK) s_work_view.answered = false;
+                        work_refresh();
+                        lv_label_set_text(s_work_state, answer_result == ESP_OK ? "sent" : "retry");
+                    }
+                    answer_result_ready = false;
+                }
+                generation = s_settings_generation;
+                if (generation == s_nav.generation) act = s_settings_act;
                 s_settings_act = SETTINGS_ACT_NONE;
-                switch (act) {
-                case SETTINGS_ACT_SETUP:
-                    qr_reserve();
-                    if (!passport_provision_active()) {
-                        passport_provision_start();
-                    }
-                    passport_app_show_setup();
-                    break;
-                case SETTINGS_ACT_BRIGHTNESS: {
-                    // Three steps round: dim, normal, bright. Written through and saved, so the choice
-                    // survives a reboot, and applied immediately because that is the point of the item.
-                    const uint8_t now = passport_config_current()->brightness;
-                    const uint8_t next = (now >= 90u) ? 40u : (uint8_t)(now + 30u);
-                    passport_config_mutable()->brightness = next;
-                    passport_config_store_save();
-                    bsp_display_backlight(next);
-                    settings_refresh_locked();
-                    ESP_LOGI(TAG, "亮度 %u%%", (unsigned)next);
-                    break;
+                if (s_answer_pending) {
+                    answer = s_answer_view;
+                    send_answer = true;
                 }
-                case SETTINGS_ACT_VOICE_TEST:
-                    // The whole voice path in one press: the bridge's synthesis, the device's speaker.
-                    // This exists because "is the voice side working?" should not require holding a
-                    // button and talking to a machine that may be listening to a quiet room.
-                    passport_app_show_status("试听语音…", PASSPORT_PET_THINKING);
-                    if (passport_speech_speak("你好，我是 DeepSeek 随身宠物。") != ESP_OK) {
-                        passport_app_show_error("网关没回应,检查中继和 bridge_url");
-                    }
-                    break;
-                case SETTINGS_ACT_STANDBY:
-                    passport_app_show_status("待机…", PASSPORT_PET_SLEEPING);
-                    vTaskDelay(pdMS_TO_TICKS(500));   // let the screen and the pet settle before dark
-                    // No timer: any key wakes it, and a device in a pocket should not wake itself.
-                    passport_power_sleep(0u);
-                    break;
-                default:
-                    break;
+                bsp_lvgl_unlock();
+            }
+            if (send_answer) {
+                completed_answer = answer;
+                answer_result = passport_work_client_answer_for(answer.question_id,
+                    answer.options[answer.selected]);
+                answer_result_ready = true;
+            }
+            // HTTP above can take seconds. Discard actions from a page/gesture
+            // that was left or cancelled while waiting, before any side effect.
+            if (act != SETTINGS_ACT_NONE) {
+                if (bsp_lvgl_lock(200)) {
+                    apply_input_cancel();
+                    if (!s_running || generation != s_nav.generation) act = SETTINGS_ACT_NONE;
+                    bsp_lvgl_unlock();
+                } else {
+                    act = SETTINGS_ACT_NONE;
                 }
             }
-            // Requests from the button task that are too heavy for it: building the setup screen
-            // means encoding the join code. See the long-press-of-UP branch in passport_app_key().
-            if (s_setup_requested) {
-                s_setup_requested = false;
-                // Everything heavy about showing the setup screen happens here, on the one task big
-                // enough for it: encoding the join code needs about six kilobytes, and starting the
-                // access point is not small either. The button task asks; this task works.
-                //
-                // The pixels are taken before the access point starts, because the radio costs tens
-                // of kilobytes and fragments what is left. Order, not luck: the allocation that
-                // cannot be retried goes before the one that can.
-                qr_reserve();
-                if (!passport_provision_active()) {
-                    passport_provision_start();
+            switch (act) {
+            case SETTINGS_ACT_SETUP: {
+                const esp_err_t err = passport_provision_active() ? ESP_OK : passport_provision_start();
+                if (bsp_lvgl_lock(1000)) {
+                    if (s_running && generation == s_nav.generation) {
+                        if (err == ESP_OK) passport_app_show_setup();
+                        else if (s_settings_info != NULL) lv_label_set_text(s_settings_info, "配网失败");
+                        else set_bubble("配网失败");
+                    }
+                    bsp_lvgl_unlock();
                 }
-                passport_app_show_setup();
+                break;
+            }
+            case SETTINGS_ACT_BRIGHTNESS: {
+                const uint8_t now = passport_config_current()->brightness;
+                const uint8_t next = passport_navigation_brightness(now);
+                passport_config_mutable()->brightness = next;
+                const esp_err_t err = passport_config_store_save();
+                if (err != ESP_OK) passport_config_mutable()->brightness = now;
+                bsp_display_backlight(err == ESP_OK ? next : now);
+                settings_refresh_locked();
+                if (err != ESP_OK && bsp_lvgl_lock(500)) {
+                    lv_label_set_text(s_settings_info, "设置失败");
+                    bsp_lvgl_unlock();
+                }
+                break;
+            }
+            case SETTINGS_ACT_VOICE_TEST: {
+                if (bsp_lvgl_lock(500)) {
+                    lv_label_set_text(s_settings_info, "已提交试听");
+                    bsp_lvgl_unlock();
+                }
+                const esp_err_t err = passport_speech_speak("你好，我是 DeepSeek 随身宠物。");
+                if (err != ESP_OK && bsp_lvgl_lock(500)) {
+                    lv_label_set_text(s_settings_info, "试听失败,请重试");
+                    bsp_lvgl_unlock();
+                }
+                break;
+            }
+            case SETTINGS_ACT_STANDBY:
+                passport_power_standby();
+                break;
+            default:
+                break;
             }
             vTaskDelay(pdMS_TO_TICKS(100));
         }
@@ -950,8 +964,11 @@ esp_err_t passport_app_start(void)
     bsp_lvgl_unlock();
 
     s_running = true;
-    // 12288 rather than 4608: this task reserves the QR pixel buffer, and reserving it encodes
-    // a symbol, which needs about six kilobytes on top of the rest.
+    if (passport_config_current()->wifi_ssid[0] == '\0') {
+        s_settings_act = SETTINGS_ACT_SETUP;
+        s_settings_generation = s_nav.generation;
+    }
+    // QR encoding runs on this worker; its scratch buffers require several kilobytes.
     if (xTaskCreate(app_task, "passport_app", 10240, NULL, 4, &s_task) != pdPASS) {
         s_running = false;
         s_task = NULL;
@@ -967,20 +984,8 @@ esp_err_t passport_app_start(void)
     } else {
         ESP_LOGI(TAG, "音频通路已预热(16kHz/16bit/单声道)");
     }
-    // The QR buffer is reserved by the worker task, not here: reserving it means encoding a
-    // symbol, and this function runs on the main task, whose stack cannot hold the encoder.
-    // Calling it here rebooted the device in a loop.
-
-    // A device with no network configured has nothing to say and no way to be set up
-    // without a cable, so it raises its own access point and says so on the panel.
-    if (passport_config_current()->wifi_ssid[0] == '\0') {
-        if (passport_provision_start() == ESP_OK) {
-            ESP_LOGI(TAG, "未配置 Wi-Fi;已启动配网热点并显示设置屏");
-            passport_app_show_setup();
-        } else {
-            ESP_LOGW(TAG, "未配置 Wi-Fi,但配网热点启动失败");
-        }
-    }
+    // Unconfigured startup is queued before worker creation; QR encoding never runs
+    // on the smaller main-task stack.
 
     ESP_LOGI(TAG, "Passport 应用已启动");
     return ESP_OK;
@@ -989,195 +994,90 @@ esp_err_t passport_app_start(void)
 // --- the re-provisioning question -------------------------------------------
 // The hint line, which the settings menu left with one set of words to say.
 
+void passport_app_cancel_input(void)
+{
+    // Close/cancel audio even if rendering is stalled; never submit a broken gesture.
+    atomic_store(&s_input_cancel_pending, true);
+    passport_speech_talk_cancel();
+    if (bsp_lvgl_lock(100)) {
+        apply_input_cancel();
+        bsp_lvgl_unlock();
+    }
+}
+
 void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev)
 {
+    if (!s_running) return;
     if (!bsp_lvgl_lock(300)) {
+        // Any missing event breaks gesture ordering; release must close audio even
+        // while LVGL is unavailable. Recovery stays pending until a lock succeeds.
+        atomic_store(&s_input_cancel_pending, true);
+        passport_speech_talk_cancel();
         return;
     }
-
-    // A press that only lights the screen again should not also do whatever that key normally does.
-    // Standby and the application share the same three buttons, so this is the one place that has
-    // to arbitrate between "wake up" and "act".
-    if (passport_power_activity()) {
-        // Except for the talk button. Someone who holds OK on a dark screen is pressing the button that
-        // means "I am about to speak", and requiring them to press it twice — once to light the screen
-        // and once to talk — reads as a device that ignored them. The owner reported exactly that. The
-        // silence gate is what makes this safe: a press in a pocket opens the microphone, hears a room,
-        // and uploads nothing.
-        //
-        // The release matters just as much as the press, and for a worse reason: if the screen dims
-        // again while the button is still held — which it will, because a held button is not the kind of
-        // activity that resets the idle timer — a swallowed release leaves the microphone open until the
-        // thirty-second ceiling, and the turn is never sent. Both ends of the press are honoured.
-        const bool talks = (btn == BSP_BTN_OK);
-        bsp_lvgl_unlock();
-        if (talks) {
-            if (ev == BSP_BTN_PRESS) {
-                passport_speech_talk_down();
-            } else if (ev == BSP_BTN_RELEASE) {
-                passport_speech_talk_up();
-            }
-        }
-        return;
-    }
-
-    // Inside the settings menu, the buttons mean what the menu says they mean. This sits above
-    // everything else, including push-to-talk, so that choosing an item cannot also start a recording.
-    if (s_on_settings) {
-        bsp_lvgl_unlock();
-        if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-            passport_app_show_home();
-            return;
-        }
-        if (ev != BSP_BTN_CLICK) {
-            return;
-        }
-        if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
-            const int step = (btn == BSP_BTN_UP) ? SETTINGS_ITEMS - 1 : 1;
-            s_settings_index = (s_settings_index + step) % SETTINGS_ITEMS;
-            settings_refresh_locked();
-            return;
-        }
-        if (btn == BSP_BTN_OK) {
-            // Only an intent is recorded here. Everything these items actually do belongs to the
-            // worker: one raises a hotspot, one writes flash, one spends seconds on the network.
-            static const settings_act_t ACTS[SETTINGS_ITEMS] = {
-                SETTINGS_ACT_SETUP, SETTINGS_ACT_BRIGHTNESS, SETTINGS_ACT_VOICE_TEST,
-                SETTINGS_ACT_STANDBY
-            };
-            s_settings_act = ACTS[s_settings_index];
-            ESP_LOGI(TAG, "设置菜单选择: %s", SETTINGS_LABELS[s_settings_index]);
-        }
-        return;
-    }
-
-    // On the setup screen the only button action is to go back; a second OK press must not
-    // start a conversation from a screen that is showing a password.
-    if (s_on_setup) {
-        bsp_lvgl_unlock();
-        if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
-            passport_app_show_home();
-        }
-        return;
-    }
-
-    // On the work screen the buttons drive the selection. UP and DOWN move it, OK answers, and
-    // a long OK goes back. Releasing the lock first keeps the press path from holding the lock
-    // while the redraw happens inside the app's own helper.
-    if (s_on_work) {
-        bsp_lvgl_unlock();
-        if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-            passport_app_show_home();
-            return;
-        }
-        if (ev != BSP_BTN_CLICK) {
-            return;
-        }
-        passport_work_key_t key = PASSPORT_WORK_KEY_NONE;
-        if (btn == BSP_BTN_UP) {
-            key = PASSPORT_WORK_KEY_UP;
-        } else if (btn == BSP_BTN_DOWN) {
-            key = PASSPORT_WORK_KEY_DOWN;
-        } else if (btn == BSP_BTN_OK) {
-            key = PASSPORT_WORK_KEY_CONFIRM;
-        }
-        if (key == PASSPORT_WORK_KEY_NONE) {
-            return;
-        }
-        if (passport_app_work_press(key) == PASSPORT_WORK_ACT_SEND_ANSWER) {
-            // Sending it to the bridge is the next milestone; what the device decided is
-            // logged now so the behaviour is observable.
-            ESP_LOGI(TAG, "工作模式:回答 %s", s_work_view.options[s_work_view.selected]);
-        }
-        return;
-    }
-
-    if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-        // No longer a sleep gesture: holding OK now means talking. Deep sleep is on a double press
-        // of UP. This branch stays only to swallow the long-press that a long utterance produces,
-        // which would otherwise fall through to the release handling.
-        bsp_lvgl_unlock();
-        return;
-    }
-
-    if (btn == BSP_BTN_UP && ev == BSP_BTN_LONG) {
-        // Enter the settings menu, and stay there until a long OK comes back.
-        //
-        // This used to open the setup screen directly, and for a device that was already on a network it
-        // asked a yes-or-no question that expired after twenty seconds. The owner asked for the shape
-        // that replaced both: a held button *enters* something, and the network details and the join code
-        // are items inside it rather than a decision forced on the way past.
-        //
-        // Only the request is made here. Building a screen and (for the join code) encoding a symbol is
-        // the worker's job: this task's stack is smaller than the encoder needs.
-        bsp_lvgl_unlock();
-        s_settings_requested = true;
-        return;
-    }
-
-    if (btn == BSP_BTN_DOWN && ev == BSP_BTN_LONG) {
-        // Reach work mode by hand. The bridge will raise it on its own later; this is how a
-        // person asks for it, and how the console's feed is reached without a bridge at all.
-        bsp_lvgl_unlock();
-        passport_app_show_work();
-        return;
-    }
-
-    if (ev == BSP_BTN_PRESS && btn == BSP_BTN_OK) {
-        // Push-to-talk: the microphone opens on the press and the turn is sent on the release.
-        // The worker does the audio and the network; this task only records the intent.
-        bsp_lvgl_unlock();
-        passport_speech_talk_down();
-        return;
-    }
-
-    if (ev == BSP_BTN_RELEASE && btn == BSP_BTN_OK) {
-        bsp_lvgl_unlock();
-        passport_speech_talk_up();
-        return;
-    }
-
-    if (btn == BSP_BTN_UP && ev == BSP_BTN_DOUBLE) {
-        // Deep sleep moved here when OK became the talk button: holding OK to speak and holding it
-        // to sleep cannot both be true. A double press is deliberate enough to be safe.
-        bsp_lvgl_unlock();
-        passport_power_sleep(0u);
-        return;
-    }
-
-    if (ev != BSP_BTN_CLICK) {
-        bsp_lvgl_unlock();
-        return;
-    }
-
-    switch (btn) {
-    case BSP_BTN_OK:
-        // A tap of OK is a very short recording, which the voice path reports as "nothing heard".
-        // It deliberately does not also start a text turn: one button, one meaning. The text-only
-        // turn is still available from the console as "llm ask".
-        bsp_lvgl_unlock();
-        return;
-    case BSP_BTN_UP:
-    case BSP_BTN_DOWN: {
-        // Step through the expressions. This is how a host verifies the whole
-        // sprite set over the serial console without a UI menu.
-        int next = (int)passport_pet_mood() + (btn == BSP_BTN_DOWN ? 1 : -1);
-        if (next < 0) {
-            next = PASSPORT_PET_MOOD_COUNT - 1;
-        }
-        if (next >= PASSPORT_PET_MOOD_COUNT) {
-            next = 0;
-        }
-        s_sleeping = (next == PASSPORT_PET_SLEEPING);
-        set_mood((passport_pet_mood_t)next, 0);
+    apply_input_cancel();
+    const passport_page_t page = s_nav.page;
+    const passport_nav_action_t action = passport_navigation_key(&s_nav,
+        (passport_nav_key_t)btn, (passport_nav_event_t)ev, passport_power_activity());
+    switch (action) {
+    case PASSPORT_NAV_SETTINGS:
+        passport_app_show_settings();
         break;
-    }
+    case PASSPORT_NAV_WORK:
+        passport_app_show_work();
+        break;
+    case PASSPORT_NAV_BACK:
+        if (passport_navigation_back(&s_nav) == PASSPORT_PAGE_SETTINGS)
+            passport_app_show_settings();
+        else passport_app_show_home();
+        break;
+    case PASSPORT_NAV_TALK_DOWN:
+        passport_speech_talk_down();
+        break;
+    case PASSPORT_NAV_TALK_UP:
+        passport_speech_talk_up();
+        break;
+    case PASSPORT_NAV_SLEEP:
+        s_settings_act = SETTINGS_ACT_STANDBY;
+        s_settings_generation = s_nav.generation;
+        break;
+    case PASSPORT_NAV_PREVIOUS:
+    case PASSPORT_NAV_NEXT:
+    case PASSPORT_NAV_CONFIRM:
+        if (page == PASSPORT_PAGE_SETTINGS) {
+            if (action == PASSPORT_NAV_CONFIRM) {
+                static const settings_act_t acts[SETTINGS_ITEMS] = {
+                    SETTINGS_ACT_SETUP, SETTINGS_ACT_BRIGHTNESS,
+                    SETTINGS_ACT_VOICE_TEST, SETTINGS_ACT_STANDBY
+                };
+                if (s_settings_act == SETTINGS_ACT_NONE) {
+                    s_settings_act = acts[s_settings_index];
+                    s_settings_generation = s_nav.generation;
+                }
+            } else {
+                s_settings_index = (s_settings_index +
+                    (action == PASSPORT_NAV_PREVIOUS ? SETTINGS_ITEMS - 1 : 1)) % SETTINGS_ITEMS;
+                settings_refresh();
+            }
+        } else if (page == PASSPORT_PAGE_WORK) {
+            const passport_work_key_t key = action == PASSPORT_NAV_CONFIRM ? PASSPORT_WORK_KEY_CONFIRM :
+                action == PASSPORT_NAV_PREVIOUS ? PASSPORT_WORK_KEY_UP : PASSPORT_WORK_KEY_DOWN;
+            if (!s_answer_pending && passport_work_key(&s_work_view, key) == PASSPORT_WORK_ACT_SEND_ANSWER) {
+                s_answer_view = s_work_view;
+                s_answer_pending = true;
+            }
+            work_refresh();
+        } else if (action != PASSPORT_NAV_CONFIRM) {
+            int next = ((int)passport_pet_mood() + PASSPORT_PET_MOOD_COUNT +
+                (action == PASSPORT_NAV_PREVIOUS ? -1 : 1)) % PASSPORT_PET_MOOD_COUNT;
+            set_mood((passport_pet_mood_t)next, 0);
+        }
+        break;
     default:
         break;
     }
     bsp_lvgl_unlock();
 }
-
 void passport_app_begin_turn(const char *prompt)
 {
     if (!bsp_lvgl_lock(500)) {
@@ -1215,7 +1115,11 @@ void passport_app_show_error(const char *reason)
         return;
     }
     set_mood(PASSPORT_PET_DISTRESSED, 4000u);
-    set_bubble((reason != NULL) ? reason : "Something went wrong.");
+    const char *message = (reason != NULL) ? reason : "Something went wrong.";
+    set_bubble(message);
+    if (s_nav.page == PASSPORT_PAGE_SETTINGS && s_settings_info != NULL) {
+        lv_label_set_text(s_settings_info, message);
+    }
     bsp_lvgl_unlock();
 }
 
@@ -1228,6 +1132,9 @@ void passport_app_show_status(const char *text, passport_pet_mood_t mood){
     set_mood(mood, 0);
     if (text != NULL && text[0] != '\0') {
         set_bubble(text);
+        if (s_nav.page == PASSPORT_PAGE_SETTINGS && s_settings_info != NULL) {
+            lv_label_set_text(s_settings_info, text);
+        }
     }
     bsp_lvgl_unlock();
 }
@@ -1240,8 +1147,23 @@ void passport_app_stop(void)
     for (int waited = 0; s_task != NULL && waited < 1000; waited += 50) {
         vTaskDelay(pdMS_TO_TICKS(50));
     }
+    // A network operation may still own this worker. Keep its UI alive rather than
+    // deleting objects it can touch after the bounded wait.
+    if (s_task != NULL) {
+        ESP_LOGW(TAG, "应用工作线程仍在退出;保留界面");
+        return;
+    }
     if (bsp_lvgl_lock(1000)) {
         passport_pet_destroy();
+        if (s_settings != NULL) {
+            lv_obj_delete(s_settings);
+            s_settings = NULL;
+            s_settings_info = NULL;
+            memset(s_settings_items, 0, sizeof(s_settings_items));
+        }
+        memset(&s_nav, 0, sizeof(s_nav));
+        s_settings_act = SETTINGS_ACT_NONE;
+        s_answer_pending = false;
         // The QR pixels came from the system heap, not from LVGL, so they are freed here
         // rather than by deleting the widget.
         heap_caps_free(s_qr_pixels);
@@ -1258,7 +1180,7 @@ void passport_app_stop(void)
             for (int i = 0; i < PASSPORT_WORK_MAX_OPTIONS; i++) {
                 s_work_options[i] = NULL;
             }
-            s_on_work = false;
+
         }
         if (s_setup != NULL) {
             lv_obj_delete(s_setup);
@@ -1266,7 +1188,7 @@ void passport_app_stop(void)
             s_setup_hotspot = NULL;
             s_setup_password = NULL;
             s_setup_address = NULL;
-            s_on_setup = false;
+
         }
         if (s_screen != NULL) {
             lv_obj_delete(s_screen);

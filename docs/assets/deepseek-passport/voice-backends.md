@@ -14,6 +14,35 @@ Survey date: 2026-10-13. **Provider names, prices, and endpoint shapes change
 often and must be re-checked before implementation.** Every price below is
 indicative only.
 
+## Current implementation — 2026-10-31
+
+The older survey below is background, not proof of running hardware. Firmware now uses nonempty
+`stt_base_url` + `stt_model` to select direct multipart-WAV STT, and nonempty `tts_base_url` +
+`tts_model` + `tts_voice` for direct PCM TTS. Keys are independently read from `stt_api_key` and
+`tts_api_key`. Missing direct configuration retains the bridge path; a failed direct request does
+not silently retry through another paid provider. LLM still uses its own `llm_*` configuration.
+
+SiliconFlow configuration: both bases `https://api.siliconflow.cn/v1`, STT model
+`FunAudioLLM/SenseVoiceSmall`, TTS model `FunAudioLLM/CosyVoice2-0.5B`, voice such as
+`FunAudioLLM/CosyVoice2-0.5B:anna`. Configure secrets privately through the device configuration
+surface, not in repository files. Request shapes were checked against the official
+[STT](https://docs.siliconflow.com/en/api-reference/audio/create-audio-transcriptions.md) and
+[TTS](https://docs.siliconflow.com/en/api-reference/audio/create-speech.md) documentation.
+Compatibility and sound quality still require real-provider/device testing.
+
+**Direct recording is deliberately limited to at most three seconds / 96 KB PCM**, reduced further
+according to available heap with an 80 KB reserve. Below half a second of available recording space,
+the request is refused. The screen shows the actual time limit. This is a short-utterance increment,
+not completion of long natural conversation: 30 seconds of PCM would need 960 KB, and the board has
+no PSRAM or recording partition. No partition/NVS schema change or persistent audio storage is added.
+The existing bridge path retains longer streamed recording.
+
+Speech commands run on one worker; accepted commands are queued, not evidence of completed playback.
+Replies are bound to their request result, failures clear stale text, and the pet has a fixed blue-whale
+system persona plus one bounded successful prior exchange (not persisted). Direct TTS streams PCM16
+mono at 16 kHz with verified TLS; bounded playback rejects transport and odd-sample errors. Physical
+microphone mute, acoustic quality, latency, TLS heap/stack margin and provider reachability are unverified.
+
 ## 1. Two hardware facts that decide the design
 
 | Fact | Value | Consequence |

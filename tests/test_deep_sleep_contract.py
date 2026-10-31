@@ -143,20 +143,38 @@ class DeepSleepContractTest(unittest.TestCase):
         self.assertLess(init.index("display_release_deep_sleep_holds()"),
                         init.index("spi_bus_initialize"))
 
-    def test_terminal_shutdown_order_precedes_deep_sleep(self) -> None:
+    def test_application_refuses_terminal_shutdown_without_quiescence(self) -> None:
+        # This is a deliberate capability restriction, not proof of safe sleep.
+        # Until producers can be stopped/joined, even an apparently idle speech
+        # task can start I2C/I2S work after a busy check. Refuse BEFORE touching
+        # buttons (their prepare can partially delete handles even on failure).
         body = function_body(self.application, "passport_power_sleep")
-        calls = [
-            "bsp_battery_sleep()",
-            "bsp_audio_sleep()",
-            "bsp_audio_prepare_deep_sleep()",
-            "bsp_i2c_prepare_deep_sleep()",
-            "bsp_display_prepare_deep_sleep()",
-            "esp_deep_sleep_start()",
-        ]
-        positions = [body.index(call) for call in calls]
-        self.assertEqual(positions, sorted(positions))
-        self.assertLess(body.index("bsp_lvgl_lock(1000)"),
-                        body.index("bsp_display_prepare_deep_sleep()"))
+        self.assertIn("return ESP_ERR_NOT_SUPPORTED", body)
+        for call in ("bsp_button_prepare_deep_sleep", "bsp_battery_sleep",
+                     "bsp_audio_sleep", "bsp_audio_prepare_deep_sleep",
+                     "bsp_i2c_prepare_deep_sleep", "bsp_display_prepare_deep_sleep",
+                     "esp_deep_sleep_start", "esp_sleep_enable_timer_wakeup",
+                     "esp_deep_sleep_enable_gpio_wakeup"):
+            self.assertNotIn(call + "(", body)
+
+    def test_power_activity_uses_short_critical_section_and_nonblocking_writer(self) -> None:
+        body = function_body(self.application, "passport_power_activity")
+        self.assertLess(body.index("portENTER_CRITICAL"), body.index("s_last_activity_us = now"))
+        self.assertLess(body.index("s_last_activity_us = now"), body.index("portEXIT_CRITICAL"))
+        self.assertLess(body.index("portEXIT_CRITICAL"), body.index("apply_backlight()"))
+        self.assertIn("now > s_last_activity_us", body)
+        apply = function_body(self.application, "apply_backlight")
+        self.assertIn("xSemaphoreTake(s_backlight_lock, 0)", apply)
+        self.assertIn("generation == s_generation", apply)
+        self.assertLess(apply.index("portEXIT_CRITICAL"), apply.index("bsp_display_backlight"))
+
+    def test_connected_standby_is_backlight_only_and_activity_clears_it(self) -> None:
+        body = function_body(self.application, "passport_power_standby")
+        self.assertIn("s_manual_standby = true", body)
+        self.assertIn("apply_backlight()", body)
+        self.assertNotIn("sleep(", body)
+        self.assertIn("s_manual_standby = false", function_body(self.application, "passport_power_activity"))
+        self.assertIn("!s_manual_standby", function_body(self.application, "passport_power_tick"))
 
 
 if __name__ == "__main__":

@@ -11,6 +11,8 @@
 #include "passport_config_store.h"
 #include "passport_http.h"
 #include "passport_notify.h"
+#include "passport_speech.h"
+#include "passport_power.h"
 #include "passport_wifi.h"
 #include "passport_work.h"
 
@@ -60,6 +62,11 @@ void passport_work_client_report(char *out, size_t out_size)
 
 esp_err_t passport_work_client_answer(const char *answer)
 {
+    return passport_work_client_answer_for(NULL, answer);
+}
+
+esp_err_t passport_work_client_answer_for(const char *question_id, const char *answer)
+{
     if (answer == NULL || answer[0] == '\0') {
         return ESP_ERR_INVALID_ARG;
     }
@@ -74,14 +81,16 @@ esp_err_t passport_work_client_answer(const char *answer)
     char url[URL_MAX];
     build_url(PASSPORT_WORK_PATH_ANSWER, url, sizeof(url));
 
-    char body[256];
-    snprintf(body, sizeof(body), "{\"answer\":\"%s\"}", answer);
+    char body[768];
+    if (!passport_work_answer_json(question_id, answer, body, sizeof(body))) {
+        return ESP_ERR_INVALID_SIZE;
+    }
 
     char response[512];
     passport_http_result_t result;
     const passport_http_request_t request = {
         .url = url,
-        .api_key = NULL,
+        .api_key = cfg->bridge_token,
         .body = body,
         .timeout_ms = 8000u,
     };
@@ -120,7 +129,7 @@ static void poll_once(void)
     passport_http_result_t result;
     const passport_http_request_t request = {
         .url = url,
-        .api_key = NULL,
+        .api_key = cfg->bridge_token,
         .body = NULL,   // a GET
         .timeout_ms = 8000u,
     };
@@ -132,7 +141,11 @@ static void poll_once(void)
         ESP_LOGW(TAG, "取状态失败: %s", esp_err_to_name(err));
         return;
     }
-    if (result.status != 200) {
+    if (result.status == 404) {
+        snprintf(s_last, sizeof(s_last), "no work to report");
+        return;
+    }
+    if (result.status != 200 || result.truncated) {
         s_failures++;
         snprintf(s_last, sizeof(s_last), "fetch returned HTTP %d", result.status);
         ESP_LOGW(TAG, "取状态返回 HTTP %d", result.status);
@@ -173,7 +186,17 @@ static void poll_once(void)
         ESP_LOGI(TAG, "工作状态变为 %s: %s", passport_work_state_name(parsed.state), parsed.task);
     }
 
+    if (announce && parsed.state == PASSPORT_WORK_WAITING) {
+        passport_power_activity(); // Connected standby must surface a new question.
+    }
     const uint8_t mode = passport_config_current()->notify_mode;
+    if (announce && mode >= 2u && (parsed.state == PASSPORT_WORK_WAITING ||
+        parsed.state == PASSPORT_WORK_DONE || parsed.state == PASSPORT_WORK_FAILED)) {
+        const char *text = parsed.question[0] ? parsed.question : parsed.task;
+        const esp_err_t queued = passport_speech_request_speak(text);
+        if (queued != ESP_OK) ESP_LOGI(TAG, "Speech notification skipped: audio busy");
+        return; // Never substitute a chime for the selected speech policy.
+    }
     const passport_work_announcement_t announcement =
         passport_work_announce(announce, parsed.state, mode);
     if (announcement != PASSPORT_WORK_ANNOUNCE_NONE) {

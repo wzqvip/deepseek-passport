@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "passport_work.h"
+#include "passport_json.h"
 
 static const char *RUNNING =
     "{\"task\":\"indexing repository\",\"progress\":42,\"state\":\"running\"}";
@@ -175,5 +176,33 @@ int main(void)
     assert(strcmp(passport_work_state_name(PASSPORT_WORK_DONE), "done") == 0);
     assert(strlen(passport_work_state_name((passport_work_state_t)99)) > 0);
 
+    // Stable question identity includes option content, but not local selection/ack.
+    passport_work_view_t first, next;
+    assert(passport_work_parse(WAITING, &first));
+    next = first;
+    next.selected = 0;
+    next.answered = true;
+    assert(passport_work_same_question(&first, &next));
+    strcpy(next.question_id, "new-generation");
+    assert(!passport_work_same_question(&first, &next));
+    next = first;
+    strcpy(next.options[0], "different");
+    assert(!passport_work_same_question(&first, &next));
+    assert(!passport_work_same_question(NULL, &next));
+    assert(passport_work_parse("{\"question_id\":\"q-42\",\"question\":\"q\"}", &view));
+    assert(strcmp(view.question_id, "q-42") == 0);
+    assert(!passport_work_parse("{\"question_id\":\"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijkl\",\"question\":\"q\"}", &view));
+
+    char body[768], decoded[128];
+    const char *answer = "a\"b\\c\n\t";
+    assert(passport_work_answer_json("q\"42", answer, body, sizeof(body)));
+    assert(passport_json_string(body, strlen(body), "answer", decoded, sizeof(decoded), NULL) == PASSPORT_JSON_OK);
+    assert(strcmp(decoded, answer) == 0);
+    assert(passport_json_string(body, strlen(body), "question_id", decoded, sizeof(decoded), NULL) == PASSPORT_JSON_OK);
+    assert(strcmp(decoded, "q\"42") == 0);
+    assert(!passport_work_answer_json("q", answer, body, 12));
+    assert(body[0] == '\0');
+    assert(!passport_work_answer_json(NULL, "", body, sizeof(body)));
+    assert(passport_work_answer_json(NULL, "yes", body, sizeof(body)));
     return 0;
 }

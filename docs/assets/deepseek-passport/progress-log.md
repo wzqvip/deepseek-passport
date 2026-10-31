@@ -19,6 +19,47 @@ Rules for this log:
 
 ---
 
+## 2026-10-31 — Source audit and functional repair
+
+Resumed from a clean `feature/deepseek-passport` checkout at `7e005bf`. Older claims of complete
+voice/hardware acceptance were not reused as proof. Source review established nonexclusive screen
+flags, swallowed releases, QR lifetime errors, work answers that only logged, and request/result races.
+The [navigation reducer](../../../main/passport_navigation.c) now owns pages and gestures; the
+[application](../../../main/passport_app.c) queues slow actions, preserves question selections and
+reports asynchronous failures. Input overflow cancels a damaged gesture rather than leaving recording on.
+
+[Speech](../../../main/passport_speech.c) and [chat](../../../main/passport_chat.c) now serialize intents,
+bind results to requests, reject stale answers, and provide a fixed persona plus one bounded prior exchange.
+[Provider helpers](../../../main/passport_provider.c) implement direct STT/TTS request shapes; direct
+recording is at most three seconds and can be shorter under low RAM. See [voice back ends](voice-backends.md).
+No real paid provider request or device flash was performed during implementation.
+
+[Bridge](../../../tools/passport_bridge.py) now authenticates, isolates turns and bounds uploads;
+[companion](../../../tools/passport_work_companion.py) publishes tasks and retrieves identified answers.
+This does not integrate an existing DSH Web session. Work mode sends physical answers and supports queued
+spoken notifications; busy audio skips a notification rather than interrupting a recording.
+
+[Power](../../../main/passport_power.c) now supports connected backlight-off standby. Unsafe deep-sleep
+teardown is deliberately rejected before disabling any producer; real deep sleep remains unfinished.
+Earlier claims that silence gating uploads nothing were false: bridge recording is uploaded before the
+local gate. Earlier speculative router-rate-limit and overwritten-length diagnoses were not established.
+
+Validation, final: static gate PASS (`./tools/validate.sh --static`, 390 documents, all host C
+executables and all Python contract/integration cases). The Bash firmware mode cannot run here —
+native ESP-IDF refuses an MSys environment — so the identical build/merge/verify/archive steps ran
+through native PowerShell in `build/validation-20261031`, which is a fresh configuration directory
+because the gate's temporary path is POSIX. Firmware PASS: application 2,291,600 bytes in the 8 MB
+factory partition, merged image 2,357,136 bytes, layout verified, archive
+`build/firmware/57e3686f…3afcd` (full image SHA-256 `57e3686f…3afcd`, ELF
+`0a993f9a…612133`), copied to `build/FoloToy-AI-Passport-full.bin`.
+
+Two defects were found by this final build and fixed, not worked around: `lv_image_cache_drop` is
+declared only in an LVGL internal header that `lvgl.h` does not re-export (the unit build hid it), and
+the speech response Content-Type check existed as dead code with no handler attached, so a JSON or MP3
+body would have been played as PCM. Device tests NOT RUN; COM47 detected without opening/resetting it.
+Remaining: physical navigation/rendering/audio/TLS memory acceptance, longer direct speech, automatic DSH
+mirroring, full localization/config preferences and safe deep-sleep lifecycle. No claim of product completion.
+
 ## 2026-10-15 — Session 43: a settings menu, entered rather than displayed
 
 The owner asked for a change of shape rather than a feature: holding a button should **enter** something and

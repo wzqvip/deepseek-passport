@@ -7,8 +7,24 @@
 What this device is, how to flash it, how to use it, and — the part that matters most — what has been
 verified and what has not.
 
-Everything below was measured on the board in this repository's hands. Where something is a person's
-check rather than a machine's, it says so instead of being rounded up.
+## Current checkpoint — 2026-10-31
+
+This revision repairs page/gesture ownership, QR lifetime, duplicate work polls, physical answer
+submission, bridge authentication and voice request/result races. Direct short-utterance STT/TTS,
+a fixed pet persona and one bounded prior exchange are implemented; see
+[voice back ends](voice-backends.md) for configuration and the three-second RAM limit.
+The [bridge contract](bridge-protocol.md) supersedes older protocol descriptions below.
+
+Long UP enters persistent settings; long DOWN enters work; long OK returns to the parent page
+(setup returns to settings, settings/work return home). Network updates do not replace settings/setup.
+Speech requests are queued; accepted is not equivalent to played. Standby now means **connected,
+backlight off**, waking on key activity. Deep sleep is explicitly refused until all resource producers
+can be stopped safely. This fixes unsafe teardown rather than claiming low-power acceptance.
+
+Current source changes require fresh device acceptance. Earlier observations below describe older
+firmware and must not be read as validation of this build. Desktop task publication and answer retrieval
+work through the companion API; automatic mirroring of an existing DSH session remains unimplemented.
+No new provider credentials were read or stored, and no live paid requests were run in this revision.
 
 ## 1. What it is
 
@@ -52,7 +68,7 @@ On the home screen:
 | **Hold OK, speak, release** | A spoken turn: record → transcribe → ask DeepSeek → answer on screen and spoken |
 | Hold DOWN | Work mode, and stays there until a long OK comes back |
 | Hold UP | **The settings menu**, and stays there until a long OK comes back. It shows the network, its address and the web address permanently, and offers the setup screen, the screen brightness, a spoken test of the voice path, and standby. The menu remembers where it was left |
-| Double-press UP | Stand by: deep sleep, waking on any key |
+| Double-press UP | Connected standby: backlight off, waking on key activity |
 
 Inside the settings menu: UP and DOWN move, OK chooses, a long OK comes back to the pet. Inside work
 mode: UP and DOWN move the selection, OK answers, a long OK comes back.

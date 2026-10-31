@@ -19,6 +19,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define PASSPORT_WORK_MAX_OPTIONS 4
@@ -37,6 +38,7 @@ typedef enum {
 typedef struct {
     char task[PASSPORT_WORK_TASK_MAX];
     char question[PASSPORT_WORK_QUESTION_MAX];
+    char question_id[64];       // opaque bridge identity; never truncate
     char options[PASSPORT_WORK_MAX_OPTIONS][PASSPORT_WORK_OPTION_MAX];
     int option_count;
     int selected;
@@ -83,6 +85,12 @@ passport_work_announcement_t passport_work_announce(bool changed,
 // must not blank the screen. Returns false only when the document has no usable task and no
 // question, which is a document that says nothing.
 bool passport_work_parse(const char *json, passport_work_view_t *view);
+
+// Compare identity and full visible options, excluding local selection/acknowledgment.
+bool passport_work_same_question(const passport_work_view_t *a, const passport_work_view_t *b);
+// Encode an answer without truncating or interpolating unescaped user text.
+bool passport_work_answer_json(const char *question_id, const char *answer,
+                               char *out, size_t out_size);
 
 // Apply one button press. Returns what the caller should do.
 passport_work_action_t passport_work_key(passport_work_view_t *view, passport_work_key_t key);

@@ -14,6 +14,8 @@ esp_err_t passport_app_start(void);
 
 // Route one button event from the application's input task.
 void passport_app_key(bsp_btn_t btn, bsp_btn_ev_t ev);
+// Input task recovery after a dropped event; never call from the timer callback.
+void passport_app_cancel_input(void);
 
 // Conversation hooks, called from the chat worker. Each takes the LVGL lock itself,
 // so callers must not already hold it.
@@ -25,7 +27,9 @@ void passport_app_show_error(const char *reason);
 // transcribing, hearing nothing. Also takes the LVGL lock itself.
 void passport_app_show_status(const char *text, passport_pet_mood_t mood);
 
-// Switch between the home screen and the setup screen that shows the hotspot credentials.
+// Switch pages exclusively; setup remembers whether it was entered from settings.
+// Setup rendering encodes a QR symbol: call from a worker with sufficient stack,
+// never from the button callback. Long OK returns to its parent page.
 void passport_app_show_setup(void);
 void passport_app_show_home(void);
 

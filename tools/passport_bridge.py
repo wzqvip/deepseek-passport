@@ -22,7 +22,26 @@ Run it with one of three providers:
 
     # No key, no network: a canned transcript and a tone. This is how the device side is verified
     # without spending anything, and how you can check your device is set up correctly.
-    python tools/passport_bridge.py --fake
+    python tools/passport_bridge.py --fake --insecure-local
+
+Normal serving requires PASSPORT_BRIDGE_TOKEN (the device's bridge_token); all
+routes use Authorization: Bearer <token>. Default bind is 127.0.0.1. For a device
+on a trusted LAN explicitly choose --host 0.0.0.0 and configure a token. HTTP does
+not encrypt it; use TLS termination for untrusted networks. --insecure-local is
+only for explicit loopback tests, and --fake alone does not disable authentication.
+
+Protocol v2 adds turn_id to accepted voice uploads and transcript responses.
+Poll /voice/transcript?turn_id=ID for exact correlation (last 16 turns retained).
+Only one upload/transcription runs at a time; overlapping uploads receive 409.
+Unidentified legacy polls snapshot the newest turn, so clients with multiple
+independent users must use turn_id. Uploads are capped at 60 seconds of PCM.
+
+Desktop integrations publish flat JSON via POST /work-status. Questions receive
+a new question_id; the device must echo it alongside answer to POST /answer.
+GET /answers?question_id=ID returns ready=0 or ready=1 with answer. Results are
+in memory (last 64), not a durable queue. Legacy file status without question_id
+still accepts label-only answers, without generation safety. Use the companion
+CLI for explicit task reporting; this is not native DSH session mirroring.
 
 Then, on the device (its serial console):
 
@@ -37,6 +56,11 @@ Prices and model names change; check the provider's own pages before relying on 
 """
 
 import argparse
+import hmac
+import ipaddress
+import socket
+from collections import OrderedDict
+from dataclasses import dataclass, field
 import json
 import math
 import os
@@ -58,18 +82,113 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 SAMPLE_RATE = 16000          # what the device captures and plays
 TTS_SAMPLE_RATE = 24000      # what OpenAI-compatible speech synthesis returns as raw PCM
 STATUS_FILE = "work-status.json"
-ANSWERS_FILE = "answers.jsonl"
 
-STATE = {
-    "audio": bytearray(),    # the most recent upload
-    "transcript": "",
-    "ready": False,
-    # Set when the current recording has been transcribed. /voice/transcript waits on it, so the device
-    # gets its answer as soon as there is one instead of asking repeatedly.
-    "done": threading.Event(),
-    "status": {"task": "waiting for a task", "state": "idle", "progress": -1},
-}
-LOCK = threading.Lock()
+MAX_AUDIO_BYTES = SAMPLE_RATE * 2 * 60
+MAX_JSON_BYTES = 4096
+MAX_TEXT_BYTES = 4096
+REQUEST_TIMEOUT_S = 15
+
+
+@dataclass
+class Turn:
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    done: threading.Event = field(default_factory=threading.Event)
+    text: str = ""
+    error: str = ""
+
+
+class RequestError(Exception):
+    def __init__(self, code, message):
+        self.code, self.message = code, message
+
+
+def validate_status(document):
+    """Keep the flat wire document within the firmware's UTF-8 buffer limits."""
+    if not isinstance(document, dict):
+        raise RequestError(400, "status must be an object")
+    allowed = {"task", "state", "progress", "question", "question_id", "selected"}
+    allowed.update("option" + str(i) for i in range(4))
+    if set(document) - allowed:
+        raise RequestError(400, "unknown status fields")
+    for key, limit in [("task", 63), ("question", 95), ("question_id", 63)] + [
+            ("option" + str(i), 47) for i in range(4)]:
+        value = document.get(key, "")
+        try:
+            valid = isinstance(value, str) and len(value.encode("utf-8")) <= limit and "\0" not in value
+        except UnicodeError:
+            valid = False
+        if not valid:
+            raise RequestError(400, "invalid " + key)
+    if not document.get("task") and not document.get("question"):
+        raise RequestError(400, "task or question required")
+    if document.get("state", "idle") not in ("idle", "running", "waiting", "done", "failed"):
+        raise RequestError(400, "invalid state")
+    for key, low, high in (("progress", -1, 100), ("selected", 0, 3)):
+        if key in document and (type(document[key]) is not int or not low <= document[key] <= high):
+            raise RequestError(400, "invalid " + key)
+    options = [document.get("option" + str(i), "") for i in range(4)]
+    if document.get("question") and (not options[0] or len(set(filter(None, options))) != len(list(filter(None, options)))):
+        raise RequestError(400, "question requires distinct options")
+    if any(options[i] and not options[i - 1] for i in range(1, 4)):
+        raise RequestError(400, "options must be contiguous")
+    return dict(document)
+
+
+class BridgeServer(ThreadingHTTPServer):
+    """Per-server state; only one audio provider operation per direction at a time."""
+    daemon_threads = True
+
+    def __init__(self, address, provider, token="", insecure_local=False,
+                 work_status=None, status_file=STATUS_FILE, slow_transcription_s=0):
+        if not token:
+            try:
+                local = ipaddress.ip_address(address[0]).is_loopback
+            except ValueError:
+                local = False
+            if not insecure_local or not local:
+                raise ValueError("bridge token required (insecure mode permits loopback IP only)")
+        self.request_slots = threading.BoundedSemaphore(32)
+        self.provider, self.token = provider, token
+        self.lock = threading.Lock()
+        self.voice_gate = threading.Lock()
+        self.speak_gate = threading.Lock()
+        self.turns = OrderedDict()
+        self.latest = None
+        self.status = validate_status(work_status) if work_status is not None else None
+        self.status_file = status_file
+        self.answers = OrderedDict()
+        self.slow_transcription_s = slow_transcription_s
+        super().__init__(address, Handler)
+
+    def process_request(self, request, client_address):
+        if not self.request_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.request_slots.release()
+
+    def get_status(self):
+        if self.status is not None:
+            return dict(self.status)
+        if self.status_file:
+            try:
+                with open(self.status_file, encoding="utf-8") as handle:
+                    raw = handle.read(MAX_JSON_BYTES + 1)
+                if len(raw.encode("utf-8")) > MAX_JSON_BYTES:
+                    raise RequestError(413, "status file too large")
+                return validate_status(json.loads(raw))
+            except (OSError, ValueError):
+                pass
+        raise RequestError(404, "no work to report")
 
 # How long /voice/transcript may hold a request waiting for the transcription.
 #
@@ -299,173 +418,241 @@ class DashScopeProvider:
 
 
 class Handler(BaseHTTPRequestHandler):
-    provider = None
-    work_status = None     # a document served as-is, or None to read the file each time
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(REQUEST_TIMEOUT_S)
 
-    def _send(self, code, body: bytes, content_type="application/json"):
+    def _send(self, code, body, content_type="application/json"):
+        self.close_connection = True
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
     def _json(self, payload, code=200):
-        self._send(code, json.dumps(payload).encode())
+        self._send(code, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 
-    # --- the device's upload -------------------------------------------------
-    def do_POST(self):  # noqa: N802 - fixed by the base class
-        path = self.path.rstrip("/")
-        if path == "/voice":
-            total = 0
-            if "chunked" in self.headers.get("Transfer-Encoding", "").lower():
-                while True:
-                    line = self.rfile.readline()
-                    if not line:
+    def _authorize(self):
+        values = self.headers.get_all("Authorization", [])
+        expected = "Bearer " + self.server.token
+        if self.server.token and (len(values) != 1 or not hmac.compare_digest(
+                values[0].encode(), expected.encode())):
+            raise RequestError(401, "bearer token required")
+        if len(self.path) > 16384:
+            raise RequestError(414, "URL too long")
+
+    def _exact(self, size):
+        data = bytearray()
+        while len(data) < size:
+            remaining = self.body_deadline - time.monotonic()
+            if remaining <= 0:
+                raise RequestError(408, "body deadline exceeded")
+            self.connection.settimeout(remaining)
+            block = self.rfile.read1(size - len(data))
+            if not block:
+                raise RequestError(400, "truncated body")
+            data.extend(block)
+        return bytes(data)
+
+    def _body(self, limit, chunked=False):
+        self.body_deadline = time.monotonic() + (65 if chunked else REQUEST_TIMEOUT_S)
+        lengths = self.headers.get_all("Content-Length", [])
+        encodings = self.headers.get_all("Transfer-Encoding", [])
+        if len(lengths) > 1 or len(encodings) > 1 or (lengths and encodings):
+            raise RequestError(400, "ambiguous framing")
+        if encodings:
+            if not chunked or encodings[0].lower() != "chunked":
+                raise RequestError(400, "unsupported transfer encoding")
+            body = bytearray()
+            chunks = 0
+            while True:
+                line = bytearray()
+                while len(line) < 129:
+                    line.extend(self._exact(1))
+                    if line.endswith(b"\n"):
                         break
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        size = int(line.split(b";")[0], 16)
-                    except ValueError:
-                        log(f"  not a chunk size: {line[:32]!r}")
-                        break
-                    if size == 0:
-                        break
-                    chunk = self.rfile.read(size)
-                    total += len(chunk)
-                    with LOCK:
-                        STATE["audio"] += chunk
-                    self.rfile.readline()
+                if not re.fullmatch(rb"[0-9a-fA-F]{1,8}\r\n", line):
+                    raise RequestError(400, "invalid chunk size")
+                size = int(line, 16)
+                chunks += 1
+                if size + len(body) > limit or chunks > 16384:
+                    raise RequestError(413, "body too large")
+                if size == 0:
+                    if self._exact(2) != b"\r\n":
+                        raise RequestError(400, "trailers unsupported")
+                    return bytes(body)
+                body.extend(self._exact(size))
+                if self._exact(2) != b"\r\n":
+                    raise RequestError(400, "invalid chunk delimiter")
+        if not lengths:
+            raise RequestError(411, "Content-Length required")
+        if not re.fullmatch(r"[0-9]{1,10}", lengths[0]):
+            raise RequestError(400, "invalid Content-Length")
+        size = int(lengths[0])
+        if size > limit:
+            raise RequestError(413, "body too large")
+        return self._exact(size)
+
+    def _document(self):
+        try:
+            value = json.loads(self._body(MAX_JSON_BYTES).decode("utf-8"))
+            if not isinstance(value, dict):
+                raise ValueError()
+            return value
+        except (ValueError, UnicodeError):
+            raise RequestError(400, "invalid JSON object") from None
+
+    def do_POST(self):  # noqa: N802
+        self._dispatch(True)
+
+    def do_GET(self):  # noqa: N802
+        self._dispatch(False)
+
+    def _dispatch(self, post):
+        try:
+            self._authorize()
+            parsed = urllib.parse.urlsplit(self.path)
+            path = parsed.path.rstrip("/")
+            query = urllib.parse.parse_qs(parsed.query)
+            if post:
+                self._post(path)
             else:
-                stated = int(self.headers.get("Content-Length", "0"))
-                body = self.rfile.read(stated) if stated else b""
-                total = len(body)
-                with LOCK:
-                    STATE["audio"] += body
-            seconds = total / 2.0 / SAMPLE_RATE
-            log(f"POST /voice -> {total} bytes ({seconds:.1f} s at {SAMPLE_RATE} Hz)")
-            self._send(202, json.dumps({"status": "accepted", "bytes": total}).encode())
-            threading.Thread(target=self._transcribe, daemon=True).start()
-            return
+                self._get(path, query)
+        except RequestError as error:
+            self._json({"error": error.message}, error.code)
+        except (TimeoutError, socket.timeout):
+            self._json({"error": "request timeout"}, 408)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
+    def _post(self, path):
+        if path == "/voice":
+            if not self.server.voice_gate.acquire(blocking=False):
+                raise RequestError(409, "voice turn busy")
+            turn = Turn()
+            # Publish a new, unsignalled event BEFORE reading or acknowledging upload.
+            with self.server.lock:
+                self.server.turns[turn.id] = turn
+                self.server.latest = turn
+                while len(self.server.turns) > 16:
+                    self.server.turns.popitem(last=False)
+            try:
+                pcm = self._body(MAX_AUDIO_BYTES, chunked=True)
+                if not pcm or len(pcm) % 2:
+                    raise RequestError(400, "expected nonempty 16-bit PCM")
+                worker = threading.Thread(target=self._transcribe, args=(turn, pcm), daemon=True)
+                worker.start()
+            except BaseException:
+                turn.error = "upload failed"
+                turn.done.set()
+                self.server.voice_gate.release()
+                raise
+            self._json({"status": "accepted", "bytes": len(pcm), "turn_id": turn.id}, 202)
+            return
+        if path == "/work-status":
+            document = validate_status(self._document())
+            # Every publication is a new question generation, even for identical labels.
+            document.pop("question_id", None)
+            if document.get("question"):
+                document["question_id"] = uuid.uuid4().hex
+            with self.server.lock:
+                self.server.status = document
+            self._json(document)
+            return
         if path == "/answer":
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length).decode("utf-8", errors="replace") if length else ""
-            with open(ANSWERS_FILE, "a", encoding="utf-8") as handle:
-                handle.write(raw + "\n")
-            log(f"POST /answer -> {raw}")
+            answer = self._document()
+            if set(answer) - {"answer", "question_id"}:
+                raise RequestError(400, "unknown answer fields")
+            with self.server.lock:
+                status = self.server.get_status()
+                qid = status.get("question_id", "")
+                if not status.get("question") or answer.get("question_id", "") != qid:
+                    raise RequestError(409, "question changed")
+                label = answer.get("answer")
+                options = [status.get("option" + str(i)) for i in range(4)]
+                if not isinstance(label, str) or not label or label not in options:
+                    raise RequestError(400, "answer is not an offered option")
+                key = qid or "legacy"
+                previous = self.server.answers.get(key)
+                result = {"question_id": qid, "answer": label}
+                if previous and previous != result:
+                    raise RequestError(409, "question already answered")
+                self.server.answers[key] = result
+                while len(self.server.answers) > 64:
+                    self.server.answers.popitem(last=False)
             self._json({"ok": True})
             return
+        raise RequestError(404, "not found")
 
-        self._json({"error": "not found"}, 404)
-
-    def _transcribe(self):
-        """Transcribe in the background.
-
-        The device polls /voice/transcript rather than waiting on the upload's response, so transcription
-        may take as long as the provider needs.
-        """
-        with LOCK:
-            pcm = bytes(STATE["audio"])
-            STATE["ready"] = False
-            STATE["done"].clear()
-        if self.server.slow_transcription_s:
-            # A deliberately slow provider, for testing that the device waits rather than giving up.
-            log(f"  (transcription delayed by {self.server.slow_transcription_s:.1f} s for testing)")
-            time.sleep(self.server.slow_transcription_s)
+    def _transcribe(self, turn, pcm):
         try:
-            text = self.provider.transcribe(pcm_to_wav(pcm))
-        except Exception as error:   # noqa: BLE001 - reported to the device as no transcript
-            log(f"  transcription failed: {error}")
-            text = ""
-        with LOCK:
-            STATE["transcript"] = text
-            STATE["ready"] = True
-            STATE["audio"].clear()
-            STATE["done"].set()      # releases whatever is waiting on /voice/transcript
-        log(f"  transcript: {text!r}")
+            if self.server.slow_transcription_s:
+                time.sleep(self.server.slow_transcription_s)
+            turn.text = self.server.provider.transcribe(pcm_to_wav(pcm))
+        except Exception:
+            turn.error = "transcription failed"
+        finally:
+            # Each worker owns its PCM and event; it never clears another turn.
+            turn.done.set()
+            self.server.voice_gate.release()
 
-    # --- what the device asks for -------------------------------------------
-    def do_GET(self):  # noqa: N802
-        path = self.path.split("?")[0].rstrip("/")
-
+    def _get(self, path, query):
         if path == "/voice/transcript":
-            # Hold the request until the transcription finishes, rather than answering "not ready" and
-            # making the device poll. The device does poll, and patiently, but a transcription is
-            # seconds of work at a provider and there is no reason to answer before it is done: the wait
-            # costs one thread and removes a whole class of races where the answer arrives between two
-            # polls.
-            if not STATE["done"].wait(timeout=WAIT_FOR_TRANSCRIPT_S):
-                log(f"GET /voice/transcript -> not ready after {WAIT_FOR_TRANSCRIPT_S:.0f} s")
-                self._json({"ready": 0, "text": ""})
-                return
-            with LOCK:
-                # `ready` is an integer, not true/false: the device reads it with an integer reader.
-                payload = {"ready": 1, "text": STATE["transcript"]}
-                log(f"GET /voice/transcript -> {STATE['transcript']!r}")
-            self._json(payload)
+            with self.server.lock:
+                ids = query.get("turn_id")
+                turn = self.server.turns.get(ids[0]) if ids else self.server.latest
+            if turn is None:
+                raise RequestError(404, "unknown voice turn")
+            ready = turn.done.wait(WAIT_FOR_TRANSCRIPT_S)
+            result = {"ready": int(ready), "text": turn.text if ready else "", "turn_id": turn.id}
+            if ready and turn.error:
+                result["error"] = turn.error
+            self._json(result)
             return
-
         if path == "/speak":
-            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             text = (query.get("text") or [""])[0]
-            # The raw escapes are logged alongside the decoded text: if a device percent-encodes
-            # something other than UTF-8, the decoded text becomes replacement characters and the
-            # question "who mangled it" is answered by the two lines together.
-            raw = urllib.parse.urlparse(self.path).query
-            log(f"GET /speak raw={raw[:160]!r}")
-            if not text:
-                self._send(404, b"no text", "text/plain")
-                return
-            log(f"GET /speak -> {text[:60]!r}{'...' if len(text) > 60 else ''}")
+            if not text or len(text.encode("utf-8")) > MAX_TEXT_BYTES:
+                raise RequestError(400, "invalid speech text")
+            if not self.server.speak_gate.acquire(blocking=False):
+                raise RequestError(409, "speech busy")
             try:
-                pcm = self.provider.speak(text)
-            except Exception as error:   # noqa: BLE001 - the device shows the answer anyway
-                log(f"  synthesis failed: {error}")
-                self._send(503, b"synthesis failed", "text/plain")
-                return
+                pcm = self.server.provider.speak(text)
+            except Exception:
+                raise RequestError(503, "synthesis failed") from None
+            finally:
+                self.server.speak_gate.release()
             self._send(200, pcm, "audio/L16;rate=16000;channels=1")
             return
-
         if path == "/work-status":
-            # No document unless there is one to serve. An invented idle document is not harmless: the
-            # device treats a status document as a notification and takes the screen over with it, and on
-            # that screen the talk button answers an option instead of starting a conversation. The owner
-            # reported exactly that — "holding OK does nothing" — with a bridge that was cheerfully
-            # reporting "waiting for a task, idle" to a device that wanted to be a pet.
-            document = self.work_status
-            if document is None:
-                try:
-                    with open(STATUS_FILE, encoding="utf-8") as handle:
-                        document = handle.read()
-                except OSError:
-                    self._json({"error": "no work to report"}, 404)
-                    return
-            self._send(200, document.encode(), "application/json")
+            with self.server.lock:
+                status = self.server.get_status()
+            self._json(status)
             return
-
-        if path in ("", "/index.html"):
-            # A tiny page, because "what is this port?" deserves an answer.
-            body = (
-                "<!doctype html><meta charset=utf-8><title>Passport bridge</title>"
-                "<body style='font-family:system-ui;padding:20px'>"
-                f"<h1>Passport bridge</h1><p>provider: <b>{self.provider.name}</b></p>"
-                "<ul><li><code>POST /voice</code> — the recording"
-                "<li><code>GET /voice/transcript</code> — the transcript"
-                "<li><code>GET /speak?text=…</code> — the spoken answer"
-                "<li><code>GET /work-status</code> — the work screen's document"
-                "<li><code>POST /answer</code> — the chosen option</ul>"
-                "<p>Point the device here: <code>config set bridge_url http://&lt;this host&gt;:"
-                f"{self.server.server_port}</code></p>"
-            ).encode()
-            self._send(200, body, "text/html; charset=utf-8")
+        if path == "/answers":
+            qid = (query.get("question_id") or [""])[0]
+            if not qid or len(qid) > 63:
+                raise RequestError(400, "question_id required")
+            with self.server.lock:
+                answer = self.server.answers.get(qid)
+                status = self.server.get_status()
+                if answer:
+                    result = dict(answer, ready=1)
+                elif status.get("question_id") == qid:
+                    result = {"ready": 0, "question_id": qid}
+                else:
+                    raise RequestError(404, "unknown or expired question")
+            self._json(result)
             return
-
-        self._json({"error": "not found"}, 404)
+        if not path:
+            self._json({"service": "passport bridge", "protocol": 2})
+            return
+        raise RequestError(404, "not found")
 
     def log_message(self, *args):
-        pass   # the prints above are the log
+        pass  # Do not log bearer tokens, transcript text, questions, or answers.
 
 
 def build_provider(args):
@@ -532,7 +719,11 @@ def main():
 
     parser = argparse.ArgumentParser(description="The Passport device's companion bridge.")
     parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--bridge-token", default=os.environ.get("PASSPORT_BRIDGE_TOKEN", ""),
+                        help="device bridge_token; prefer PASSPORT_BRIDGE_TOKEN environment variable")
+    parser.add_argument("--insecure-local", action="store_true",
+                        help="explicitly allow no authentication on a loopback IP for local tests")
     parser.add_argument("--provider", choices=["siliconflow", "dashscope"], default="siliconflow")
     parser.add_argument("--base-url", default="https://api.siliconflow.cn/v1",
                         help="for any OpenAI-compatible service")
@@ -552,16 +743,19 @@ def main():
                         help="pretend the provider is this slow, to check the device keeps waiting")
     args = parser.parse_args()
 
-    Handler.provider = build_provider(args)
-    Handler.work_status = args.work_status or None
-
+    provider = build_provider(args)
     if args.selftest:
-        selftest(Handler.provider)
+        selftest(provider)
         return
 
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
-    server.slow_transcription_s = args.stt_delay
-    log(f"passport bridge on http://{args.host}:{args.port} using '{Handler.provider.name}'")
+    try:
+        document = json.loads(args.work_status) if args.work_status else None
+        server = BridgeServer((args.host, args.port), provider, args.bridge_token,
+                              args.insecure_local, work_status=document,
+                              slow_transcription_s=args.stt_delay)
+    except (ValueError, RequestError) as error:
+        parser.error(str(error))
+    log(f"passport bridge on http://{args.host}:{args.port} using '{provider.name}'")
     log(f"  point the device at it:  config set bridge_url http://<this host>:{args.port}")
     log(f"  work screen document:    {args.work_status or STATUS_FILE + ' (if it exists)'}")
     try:

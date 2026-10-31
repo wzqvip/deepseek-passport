@@ -4,143 +4,92 @@
 
 # Passport Bridge Protocol
 
-How the device and its companion bridge talk to each other. The device is a thin terminal:
-the bridge owns the session, knows what the desktop is doing, and asks the device only for the
-answers a person has to give.
+Current contract, updated 2026-10-31. Implemented by
+[passport_bridge.py](../../../tools/passport_bridge.py) and the device work/speech clients.
+The desktop [companion CLI](../../../tools/passport_work_companion.py) publishes real task
+status and retrieves answers. It does **not** automatically mirror an existing DeepSeek Harness
+Web session. No supported subscription/answer hook for that session has been verified.
 
-This document is the contract. The device side is implemented and verified against a stand-in
-server ([`tools/mock_bridge.py`](../../../tools/mock_bridge.py)); the bridge itself is the next
-piece of work, and the desktop-session integration behind it is not designed here.
+## Authentication and deployment
 
-## 1. Transport
+Every endpoint requires `Authorization: Bearer <bridge_token>`. Configure the same secret in device
+`bridge_token` and the process environment `PASSPORT_BRIDGE_TOKEN`; do not put it in source or logs.
+The bridge defaults to `127.0.0.1`. To serve a physical device, explicitly bind `--host` to a reachable
+trusted-LAN address and set device `bridge_url`. Plain HTTP exposes the token and task/audio contents
+to network observers: use a trusted LAN or a properly configured HTTPS front end. Never expose the
+agent Web server to the LAN just to connect this device.
 
-**Plain HTTP over the local network, not TLS.** The bridge is a companion process on the same
-network as the device, and the document carries no credentials. Skipping the handshake keeps the
-largest free heap block at 112 KiB instead of 68 KiB, which this board needs for the display and
-the audio path.
+`--insecure-local` disables authentication only on loopback, for local tests. `--fake` does not bypass
+authentication. Provider credentials are separately supplied as `PASSPORT_BRIDGE_KEY`.
+No permanent service is installed automatically.
 
-The consequence is stated rather than hidden: **anything on the network can serve a status
-document or read an answer.** Do not run this on a network you do not control. The configuration
-already reserves `bridge_token` for the authentication this needs before it leaves a trusted LAN.
+## Work status and answers
 
-`bridge_url` is the base URL, for example `http://192.168.2.183:8080`. The device polls
-`<bridge_url>/work-status` every five seconds while work mode is reachable and the station is
-associated.
-
-## 2. `GET /work-status`
-
-Returns one JSON object. Every field is optional, and a field the device cannot read becomes a
-default rather than a failure, because a bridge that grows a new field must not blank the screen.
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `task` | string | What the session is doing. Shown on the work screen. |
-| `progress` | number 0–100 | Fraction complete. **Absent means unknown**, and is shown as `--` rather than as an empty bar; a value outside the range is clamped. |
-| `state` | string | `running`, `waiting`, `done`, or `failed`. Anything else reads as idle. |
-| `question` | string | A question for the owner. Present means the device can be answered. |
-| `option0` … `option3` | string | The choices. **Numbered fields, not an array**: the device's reader is a few hundred bytes rather than a parser, and numbered fields need no delimiter escaping, so an option containing a comma or a quote cannot corrupt the list. |
-| `selected` | number 0–3 | Which option to highlight first. Ignored when outside the list. |
-
-Rules the device applies, all of them tested on the host and observed on hardware:
-
-- **The option list ends at the first gap.** `option0` and `option1` followed by nothing is two
-  options; a lone `option3` is not one option.
-- **Options without a question are not selectable.**
-- **A document with neither `task` nor `question` is refused**, and the device keeps showing the
-  previous state rather than blanking.
-- **A document arriving while the setup screen is open does not take over.** Someone halfway
-  through provisioning should not be thrown out of it by a background update. From the home
-  screen, the work screen does take over.
-
-Example:
+`GET /work-status` returns a flat JSON document; `404` means no task has been published, not a
+network failure. `POST /work-status` publishes a document from the companion:
 
 ```json
 {"task":"deploy","state":"waiting","question":"Which branch?",
- "option0":"main","option1":"develop","option2":"release","selected":0}
+ "option0":"main","option1":"develop","selected":0}
 ```
 
-## 3. `POST /answer`
+Fields: `task`, `state` (`idle`, `running`, `waiting`, `done`, `failed`), optional `progress` (0–100),
+`question`, contiguous `option0` through `option3`, and initial `selected`. Publishing a question
+assigns an opaque `question_id`. The device retains that identity, selection and acknowledged state
+across duplicate polls. Changed identity/question/options creates a new choice. Settings and setup
+pages are not replaced by notifications; an active talk gesture is not interrupted.
 
-Sent when the owner confirms a choice with the buttons.
+Physical confirmation queues a worker request, never performs networking on the input task:
 
 ```json
-{"answer":"develop"}
+{"question_id":"<opaque-id>","answer":"develop"}
 ```
 
-`answer` is the **text** of the chosen option, not its index: the text is what a person chose, and
-it survives the option list changing underneath. The bridge answers `200` with a JSON body; the
-device logs the status and records it for the console. A non-200 leaves the answer unsent, and the
-device says so rather than pretending it was delivered.
+`POST /answer` preserves the selected label using JSON escaping. Same question/same answer retries
+are idempotent; a conflicting or stale answer returns `409`. On transport failure the device permits
+retry for the same current question. Legacy file-backed documents without an ID accept label-only
+answers, without the generation protection of published questions.
 
-**One question takes one answer.** The device refuses a second confirmation for the same question
-until a new document arrives, so a double press cannot answer twice.
+`GET /answers?question_id=<id>` returns `ready: 0` while waiting and `ready: 1` with `answer` when
+available. Results are memory-only (last 64); restarting the bridge loses them. The bridge no longer
+writes answers or transcripts to a persistent log by default.
 
-## 4. Voice
+Example companion commands (the token is read from the environment):
 
-Push-to-talk uses **two requests**, and that is not an accident of implementation.
-
-### `POST /voice`
-
-The body is the recording, streamed as it is captured: raw little-endian 16-bit mono PCM at 16 kHz,
-declared as `audio/L16;rate=16000;channels=1`, sent with `Transfer-Encoding: chunked` because the
-length is unknown when the request starts. The device does **not** read this response, and the status
-code it would carry is not consulted. It answers `202` with `{"status":"accepted","bytes":N}` for a
-human reading a log.
-
-The transfer framing is written by the device's own code. Its HTTP client declares the body as
-chunked and then writes the caller's bytes unframed, which a server reads as a chunk size followed by
-garbage; see `passport_speech.c`.
-
-**A correction, because this document previously said something false.** It claimed the device cannot
-read a response after a chunked upload, and offered that as the reason for the two-request shape. The
-claim came from a misread signature: `esp_http_client_fetch_headers` returns a *length* — a positive
-content length, 0 for a chunked body, -1 on error — and the code compared it with `ESP_OK`, so every
-response with a body looked like a transport failure. The client is fine; the mistake was ours.
-
-The two-request shape is kept, for a reason that survives the correction: a real bridge may spend
-seconds transcribing, and a separate `GET` lets it take that time without holding this socket open,
-while the answer arrives through the plain request path already proven on this device.
-
-### `GET /voice/transcript`
-
-Returns the transcript of the most recent upload:
-
-```json
-{"ready": 1, "text": "which branch should I deploy"}
+```text
+python tools/passport_work_companion.py --help
+python tools/passport_work_companion.py status --help
+python tools/passport_work_companion.py ask --help
+python tools/passport_work_companion.py answer --help
 ```
 
-`ready` is **an integer, 1 or 0**, and a missing `ready` counts as ready. The device's reader is an
-integer reader — the same one the work protocol uses — so a bridge that answers `"ready": true` is
-polled until the attempts run out while its answer sits there unread. That is exactly what happened
-the first time, and it is why the field is specified as a number.
+These interfaces support actual desktop applications that explicitly publish tasks. Automatic DSH
+mirroring, durable delivery, free-text voice instructions into that session and remote relay remain
+unfinished product requirements; the CLI is not a claim that those features exist.
 
-`ready: 0` means still working; the device retries every 400 ms, six times, then gives up and reports
-that the bridge was still transcribing. An empty `text` with `ready: 1` means the audio held no
-speech, and the device says so rather than asking the model about nothing.
+## Voice uploads
 
-The recording's own success is judged **here**, not by the upload's response: a failed upload shows up
-as a bridge that never becomes ready. That is deliberate, because the upload's response arrives on a
-connection the device has already finished with.
+`POST /voice` accepts bounded little-endian PCM16, mono, 16 kHz, including chunked uploads.
+The device writes all framing bytes, checks HTTP `202`, parses the complete acceptance response,
+and retains its 32-hex `turn_id`. Every upload owns a separate buffer/event/result; overlapping
+uploads are rejected with `409` rather than mixing audio. The bridge retains at most 16 turns.
+The maximum upload is 60 seconds / 1,920,000 bytes; malformed framing, excessive sizes and deadlines
+are rejected. Local silence gating happens **after** bridge audio upload, not before transmission.
 
-### `GET /speak?text=<percent-encoded>`
+`GET /voice/transcript?turn_id=<id>` returns the matching `turn_id`, integer `ready` (0 or 1), and
+`text` once ready. The device verifies the ID and polls with a bounded budget while showing a thinking
+state. Empty text is not sent to the language model. Legacy no-ID reads are supported by the bridge,
+but current firmware requires identified turns; update bridge and firmware together.
 
-Returns the spoken form of `text` as raw little-endian 16-bit mono PCM at 16 kHz — the same shape the
-device uploads, so one format covers both directions. The device streams it into the speaker as it
-arrives, holding the audio path for the whole utterance, which is what keeps the microphone shut from
-the first sample to the last.
+## Speech output
 
-- `404` or an empty body is **not a failure**: the answer is on the screen, so the turn simply ends
-  without sound.
-- The text is percent-encoded UTF-8, and **the device speaks a bounded prefix** of a long answer —
-  currently about 190 bytes, cut on a character boundary. A kilobyte of Chinese is half a minute of
-  audio, and the encoding triples whatever it carries. The full text is on the screen; the log says
-  when it was shortened.
-- The device does not read a `Content-Length` and does not care whether the body is chunked.
+`GET /speak?text=<percent-encoded-UTF8>` returns PCM16 little-endian, mono, 16 kHz. Playback and
+recording requests are serialized by the speech worker. Output is bounded, odd-byte PCM and transport
+errors are failures, and a partially played response does not turn a failed request into success.
+Device speech is a bounded prefix of the displayed response; it is not full-response streaming.
+Submitting a speech request means **queued**, not audible playback verified.
 
-## 5. What the device does not do
-
-- It does not stream. Polling every five seconds is the whole mechanism; a session that changes
-  faster than that is not what this is for.
-- It does not speak or chime yet. The document carries no announcement instruction, and the audio
-  path for work mode is not wired. This is the next thing after the bridge exists.
-- It does not authenticate. See section 1.
+Device-direct STT/TTS now use separately configured provider fields; see
+[voice back ends](voice-backends.md). The bridge is still needed for desktop work integration, and
+remains an optional voice transport. Loopback fake-provider integration tests establish protocol
+behavior, not live providers, real microphone quality, LAN reachability, or on-device acceptance.

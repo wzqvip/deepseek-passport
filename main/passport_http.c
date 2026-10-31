@@ -2,6 +2,8 @@
 #include "passport_http.h"
 
 #include <string.h>
+#include <stdio.h>
+#include <limits.h>
 
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
@@ -20,7 +22,7 @@ esp_err_t passport_http_request(const passport_http_request_t *request,
                                 char *body_out, size_t body_out_size)
 {
     if (request == NULL || result == NULL || request->url == NULL ||
-        body_out == NULL || body_out_size == 0u) {
+        body_out == NULL || body_out_size == 0u || body_out_size > INT_MAX) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -39,6 +41,7 @@ esp_err_t passport_http_request(const passport_http_request_t *request,
         .timeout_ms = (request->timeout_ms > 0u) ? (int)request->timeout_ms : 15000,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .keep_alive_enable = false,
+        .disable_auto_redirect = true,
         .buffer_size = 1024,
     };
 
@@ -100,30 +103,49 @@ esp_err_t passport_http_request(const passport_http_request_t *request,
         result->largest_during =
             heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
-        if (body_len > 0u) {
-            const int written = esp_http_client_write(client, request->body, (int)body_len);
-            if (written < 0 || (size_t)written != body_len) {
-                ESP_LOGE(TAG, "请求体写入不完整");
+        size_t sent = 0;
+        while (sent < body_len) {
+            const int written = esp_http_client_write(client, request->body + sent,
+                                                       (int)(body_len - sent));
+            if (written <= 0) {
                 err = ESP_FAIL;
                 break;
             }
+            sent += (size_t)written;
         }
+        if (err != ESP_OK) break;
 
         const int content_length = esp_http_client_fetch_headers(client);
         result->status = esp_http_client_get_status_code(client);
+        if (content_length < 0 || result->status <= 0) {
+            err = ESP_FAIL;
+            break;
+        }
 
         int total = 0;
         const int capacity = (int)body_out_size - 1;
         while (total < capacity) {
             const int read = esp_http_client_read(client, body_out + total, capacity - total);
-            if (read <= 0) {
+            if (read < 0) {
+                err = ESP_FAIL;
                 break;
             }
+            if (read == 0) break;
             total += read;
         }
         body_out[total] = '\0';
         result->body_len = total;
         result->truncated = (content_length > total);
+        if (err == ESP_OK && total == capacity && !esp_http_client_is_complete_data_received(client)) {
+            char extra;
+            const int more = esp_http_client_read(client, &extra, 1);
+            if (more > 0) result->truncated = true;
+            if (more < 0) err = ESP_FAIL;
+        }
+        if (err == ESP_OK && !result->truncated &&
+            !esp_http_client_is_complete_data_received(client)) {
+            err = ESP_FAIL; // Timeout/early EOF is not a successful JSON response.
+        }
         result->elapsed_ms = (esp_timer_get_time() - started_us) / 1000;
     } while (false);
 
