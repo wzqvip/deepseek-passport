@@ -140,6 +140,16 @@ cc -std=c11 -Wall -Wextra -Werror -Imain \
 
 完整验证要求预先激活 ESP-IDF 5.5.3。CI 与本地使用同一脚本；若 CI 和本地行为不同，应先修复脚本或环境，而不是维护两份命令。
 
+### 解释器与 shell 的可移植性
+
+验证脚本按 `python3`、`python` 的顺序选择解释器，也接受外部传入的 `PYTHON`：Windows 上的 Git Bash
+没有 `python3` 别名，而只能跑在 CI 镜像里的门禁，开发者自己是用不了的。Linux 与 macOS 行为不变。
+
+固件模式必须在 ESP-IDF 真正激活的环境里运行。ESP-IDF 5.5.3 在 MSys/MingW 下只打印一句"环境不受支持"
+就什么都不做，因此在 Windows 的 Git Bash 里执行 `./tools/validate.sh --firmware` 会**立即拒绝**，并打印
+应在 ESP-IDF PowerShell 或 `export.sh` 提示符下执行的等价命令。这是有意的：没有这道检查,脚本会带着一个
+**从未构建过**的目录走到校验步骤并报告镜像缺失,那看起来像构建坏了,而不是 shell 环境不对。静态模式不受影响。
+
 涉及物理外设的改动必须在真机运行硬件指南验收清单，并把“编译通过”与“硬件验证通过”分开记录。
 
 社区只能上传验证通过的 `build/FoloToy-AI-Passport-full.bin`，不得上传应用单镜像

@@ -164,6 +164,19 @@ Use the unified validation entry point:
 
 CI calls the same script. Fix the shared script or environment if local and CI behavior differs; do not duplicate command sequences in workflows.
 
+### Interpreter and shell portability
+
+The gate picks `python3`, then `python`, or honours an inherited `PYTHON`: Git Bash on Windows has no `python3`
+alias, and a gate that only runs on the CI image is a gate developers cannot use. On Linux and macOS nothing
+changes.
+
+The firmware mode must run where ESP-IDF is actually active. ESP-IDF 5.5.3 prints an unsupported-environment
+warning under MSys/MingW and then produces nothing, so `./tools/validate.sh --firmware` started from Git Bash
+on Windows refuses immediately and prints the equivalent commands to run from an ESP-IDF PowerShell or
+`export.sh` prompt. That is deliberate: without the check the script would reach the verification step with a
+directory that was never built and report a missing image, which reads as a broken build rather than a
+shell-environment one. The static mode is unaffected.
+
 Hardware-affecting changes must also run the applicable on-device checklist in the hardware guide. Report compilation separately from physical-device validation.
 
 Never upload the app-only `build/FoloToy-AI-Passport.bin` to the community. Only

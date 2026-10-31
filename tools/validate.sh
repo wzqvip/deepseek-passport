@@ -4,6 +4,38 @@ set -euo pipefail
 mode="${1:---all}"
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# The interpreter this gate calls is `python` on Windows and `python3` almost everywhere else, and Git
+# Bash on Windows has no `python3` alias at all. Selecting it once keeps the gate runnable on the
+# developer's machine instead of only in CI, which is what makes "CI runs the same script" true.
+if [[ -n "${PYTHON:-}" ]]; then
+    :
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON=python3
+elif command -v python >/dev/null 2>&1; then
+    PYTHON=python
+else
+    echo "ERROR: no python3 or python on PATH" >&2
+    exit 1
+fi
+
+# ESP-IDF's own tools print an unsupported-environment warning under MSys/MingW and then produce nothing,
+# so a firmware run started from Git Bash on Windows would quietly verify a directory that was never built.
+# Refusing up front, with the working alternative named, is better than a failure that looks like a broken
+# build. The static mode is unaffected: it needs a C compiler and Python only.
+refuse_msys_firmware() {
+    if [[ -z "${MSYSTEM:-}" ]]; then
+        return 0
+    fi
+    echo "ERROR: the firmware mode cannot run under MSys/MingW (Git Bash)." >&2
+    echo "       Static checks:  bash tools/validate.sh --static" >&2
+    echo "       Firmware, from an ESP-IDF 5.5.3 PowerShell or export.sh prompt:" >&2
+    echo "         idf.py -B <dir> -D SDKCONFIG=<dir>/sdkconfig build" >&2
+    echo "         idf.py -B <dir> merge-bin -o FoloToy-AI-Passport-full.bin" >&2
+    echo "         python tools/verify_firmware.py <dir>" >&2
+    echo "         python tools/archive_firmware.py create <dir> --archive-root build/firmware" >&2
+    exit 1
+}
+
 usage() {
     echo "Usage: $0 [--all|--static|--firmware]" >&2
 }
@@ -12,7 +44,7 @@ run_static_checks() {
     local actionlint_bin
     local test_dir
 
-    python3 tools/check_repo.py
+    "${PYTHON}" tools/check_repo.py
 
     actionlint_bin="${ACTIONLINT_BIN:-}"
     if [[ -z "${actionlint_bin}" ]]; then
@@ -112,21 +144,23 @@ run_static_checks() {
     # replaced by the application's own screens. Their deep-sleep contract was not deleted with them —
     # it was retargeted at main/passport_power.c, because it is what found that the replacement was
     # sleeping without shutting the board down first.
-    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_deep_sleep_contract.py
-    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_key_wake_contract.py
-    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_passport_chat_contract.py
-    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_passport_bridge.py
-    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_passport_work_companion.py
-    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_check_repo.py
-    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_verify_firmware.py
-    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_archive_firmware.py
-    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_install_passport_skills.py
+    PYTHONDONTWRITEBYTECODE=1 "${PYTHON}" tests/test_deep_sleep_contract.py
+    PYTHONDONTWRITEBYTECODE=1 "${PYTHON}" tests/test_key_wake_contract.py
+    PYTHONDONTWRITEBYTECODE=1 "${PYTHON}" tests/test_passport_chat_contract.py
+    PYTHONDONTWRITEBYTECODE=1 "${PYTHON}" tests/test_passport_bridge.py
+    PYTHONDONTWRITEBYTECODE=1 "${PYTHON}" tests/test_passport_work_companion.py
+    PYTHONDONTWRITEBYTECODE=1 "${PYTHON}" tests/test_check_repo.py
+    PYTHONDONTWRITEBYTECODE=1 "${PYTHON}" tests/test_verify_firmware.py
+    PYTHONDONTWRITEBYTECODE=1 "${PYTHON}" tests/test_archive_firmware.py
+    PYTHONDONTWRITEBYTECODE=1 "${PYTHON}" tests/test_install_passport_skills.py
     rm -rf "${test_dir}"
     echo "Host tests: PASS"
 }
 
 run_firmware_checks() (
     local validation_build_dir
+
+    refuse_msys_firmware
 
     if ! command -v idf.py >/dev/null 2>&1; then
         echo "ERROR: idf.py is not available; activate ESP-IDF 5.5.3 first." >&2
@@ -141,8 +175,8 @@ run_firmware_checks() (
         -D "SDKCONFIG=${validation_build_dir}/sdkconfig" build
     idf.py -B "${validation_build_dir}" merge-bin \
         -o "${validation_build_dir}/FoloToy-AI-Passport-full.bin"
-    python3 tools/verify_firmware.py "${validation_build_dir}"
-    PYTHONDONTWRITEBYTECODE=1 python3 tools/archive_firmware.py create \
+    "${PYTHON}" tools/verify_firmware.py "${validation_build_dir}"
+    PYTHONDONTWRITEBYTECODE=1 "${PYTHON}" tools/archive_firmware.py create \
         "${validation_build_dir}" --archive-root "${repo_root}/build/firmware"
     mkdir -p "${repo_root}/build"
     install -m 0644 \

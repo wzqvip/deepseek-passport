@@ -19,6 +19,25 @@ Rules for this log:
 
 ---
 
+## 2026-10-31 — The gate now fails for the reason it actually failed
+
+`./tools/validate.sh --firmware` has been unusable from this Windows checkout for the whole session, and the
+reason was worth writing down rather than working around: ESP-IDF 5.5.3 prints an unsupported-environment
+warning under MSys/MingW and then produces **nothing, with exit status 0**. The script therefore proceeded to
+`merge-bin` (also a no-op) and finally reported `merged firmware or flash_args is missing` — a message that
+reads as a broken build, when the build never started.
+
+Chasing it to a "fix" first was a mistake worth recording: hiding `MSYSTEM` from `idf.py` did not help, and
+neither did invoking `idf.py` through the ESP-IDF Python directly — each produced the same warning and exit 0.
+Session evidence: `env -u MSYSTEM idf.py --version` prints only the warning. So the honest answer is a check,
+not a workaround: under MSys the firmware mode now refuses immediately and prints the four equivalent commands
+to run from an ESP-IDF prompt, while the static mode keeps working. The developer's alternative was already
+proven in this session — a fresh native PowerShell build, merge, verify and archive.
+
+The same change makes the gate pick `python3`, `python`, or an inherited `PYTHON`, because Git Bash on Windows
+has no `python3` at all: a gate that only runs on the CI image is a gate developers cannot use. Both languages
+of the build guide say so, including why the shell check exists.
+
 ## 2026-10-31 — The device-hosted console can finally say what the device is doing
 
 The requirement asks the web console for diagnostics — heap, largest block, uptime, signal, and recent
