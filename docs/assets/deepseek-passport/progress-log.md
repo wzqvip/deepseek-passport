@@ -19,6 +19,24 @@ Rules for this log:
 
 ---
 
+## 2026-10-31 — The corner says "ERR" instead of failing silently
+
+The device observed on 2026-10-31 had polled its bridge fourteen times and failed every one, and its screen
+showed an idle pet. Nothing anywhere the owner could look said that the link — not the pet, not the
+button — was the problem. A device that fails quietly is the worst kind: it teaches its owner that the
+product does not work.
+
+The status strip now has three states rather than two. `WORK` means a task is published, `ERR` means a
+configured bridge has stopped answering, and nothing means there is nothing to report. Two consecutive
+failures are enough to show it, so a wrong address is visible within about ten seconds instead of never,
+and one lost packet is not. It clears the moment a poll succeeds or a document arrives, because one success
+proves the address and the token are right.
+
+The states share one cached value for one label. That is deliberate: the two independent flags that would
+naturally express "work" and "error" raced over the same label in the first attempt at this, and the
+sentence above about teaching the owner the product does not work applies to a widget that flickers between
+two truths just as well.
+
 ## 2026-10-31 — A launcher, because the address will move again
 
 The previous entry ended with a stale address costing an evening. That will happen again: a laptop changes

@@ -30,3 +30,9 @@ esp_err_t passport_work_client_answer_for(const char *question_id, const char *a
 
 // Describe the client's last attempt for the console.
 void passport_work_client_report(char *out, size_t out_size);
+
+// Whether the bridge is currently reachable: true when a poll has succeeded since the last failure, or
+// when no bridge is configured at all (nothing to be wrong with). This exists because a device whose
+// bridge answers nothing at all used to poll once every five seconds and say nothing anywhere the owner
+// could see — observed as fourteen failures in a row with an apparently idle pet.
+bool passport_work_client_link_ok(void);

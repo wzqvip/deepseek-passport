@@ -52,6 +52,8 @@ static const char *TAG = "passport_app";
 #define APP_ACCENT  0x4D6BFE
 #define APP_PAPER   0xEAF0FF
 #define APP_MUTED   0x8FA3C8
+// The one colour that means something is wrong, used by the status strip when the bridge stops answering.
+#define APP_ALERT   0xD9534F
 // An unlit signal bar: visible enough to show how many there are, dark enough not to read as signal.
 #define WIFI_BAR_OFF 0x24314F
 
@@ -90,7 +92,7 @@ static lv_obj_t *s_wifi_bars[3];
 static lv_obj_t *s_mic;
 static lv_obj_t *s_work_indicator;
 static bool s_mic_shown;
-static bool s_work_shown;
+static int s_work_badge;   // 0 none, 1 link error, 2 a task is published
 
 // The hint line, and the menu.
 #define HINT_DEFAULT "按住OK说话   长按DOWN工作\n长按UP设置   双击UP待机"
@@ -852,11 +854,17 @@ static void indicators_refresh(void)
         lv_obj_set_style_text_color(s_mic, lv_color_hex(listening ? APP_ACCENT : APP_MUTED), 0);
     }
     const bool working = (s_work_view.task[0] != '\0') && (s_work_view.state != PASSPORT_WORK_IDLE);
-    if (s_work_indicator != NULL && working != s_work_shown) {
-        s_work_shown = working;
-        lv_label_set_text(s_work_indicator, working ? "WORK" : "");
+    // A configured bridge that stops answering is the failure the owner otherwise cannot see: the pet sits
+    // there looking idle while every poll fails. "ERR" says the link is the problem, and it gives way to
+    // "WORK" the moment a task actually arrives. One cached value for one label, so the two states cannot
+    // fight over it.
+    const int badge = working ? 2 : (passport_work_client_link_ok() ? 0 : 1);
+    if (s_work_indicator != NULL && badge != s_work_badge) {
+        s_work_badge = badge;
+        lv_label_set_text(s_work_indicator, badge == 2 ? "WORK" : (badge == 1 ? "ERR" : ""));
         lv_obj_set_style_text_color(s_work_indicator,
-                                    lv_color_hex(working ? APP_ACCENT : APP_MUTED), 0);
+                                    lv_color_hex(badge == 2 ? APP_ACCENT
+                                                : badge == 1 ? APP_ALERT : APP_MUTED), 0);
     }
     bsp_lvgl_unlock();
 }
@@ -1240,7 +1248,7 @@ void passport_app_stop(void)
         s_mic = NULL;
         s_work_indicator = NULL;
         s_mic_shown = false;
-        s_work_shown = false;
+        s_work_badge = 0;
         s_bubble = NULL;
         s_mood = NULL;
         s_hint = NULL;

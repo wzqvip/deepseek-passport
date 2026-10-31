@@ -36,6 +36,10 @@ static passport_work_state_t s_last_state = PASSPORT_WORK_IDLE;
 static bool s_have_document;
 static int s_polls;
 static int s_failures;
+// Failures since the last successful poll. Two is enough to stop blaming a single lost packet, and small
+// enough that a wrong address shows on the screen within about ten seconds instead of never.
+#define WORK_LINK_FAILURES_SHOWN 2
+static int s_consecutive_failures;
 
 static void build_url(const char *path, char *out, size_t out_size)
 {
@@ -58,6 +62,17 @@ void passport_work_client_report(char *out, size_t out_size)
              "bridge=%s polls=%d failures=%d last=\"%s\"",
              (cfg->bridge_url[0] != '\0') ? cfg->bridge_url : "(not configured)", s_polls,
              s_failures, s_last);
+}
+
+bool passport_work_client_link_ok(void)
+{
+    const passport_config_t *cfg = passport_config_current();
+    if (cfg->bridge_url[0] == '\0') {
+        return true;   // nothing is configured, so nothing is broken
+    }
+    // Consecutive rather than cumulative: one success means the address and the token are right, and a
+    // later single failure is not worth a permanent warning.
+    return s_consecutive_failures < WORK_LINK_FAILURES_SHOWN;
 }
 
 esp_err_t passport_work_client_answer(const char *answer)
@@ -137,24 +152,30 @@ static void poll_once(void)
     s_polls++;
     if (err != ESP_OK) {
         s_failures++;
+        s_consecutive_failures++;
         snprintf(s_last, sizeof(s_last), "fetch failed: %s", esp_err_to_name(err));
         ESP_LOGW(TAG, "取状态失败: %s", esp_err_to_name(err));
         return;
     }
     if (result.status == 404) {
+        s_consecutive_failures = 0;   // reachable and authenticated: the link is fine
         snprintf(s_last, sizeof(s_last), "no work to report");
         return;
     }
     if (result.status != 200 || result.truncated) {
         s_failures++;
+        s_consecutive_failures++;
         snprintf(s_last, sizeof(s_last), "fetch returned HTTP %d", result.status);
         ESP_LOGW(TAG, "取状态返回 HTTP %d", result.status);
         return;
     }
 
+    s_consecutive_failures = 0;   // the bridge answered with a document
+
     passport_work_view_t parsed;
     if (!passport_work_parse(document, &parsed)) {
         s_failures++;
+        s_consecutive_failures++;
         snprintf(s_last, sizeof(s_last), "document had nothing usable");
         ESP_LOGW(TAG, "状态文档没有可用内容");
         return;
@@ -180,6 +201,7 @@ static void poll_once(void)
 
     if (!passport_app_work_feed(document)) {
         s_failures++;
+        s_consecutive_failures++;
         return;
     }
     if (state_changed) {
