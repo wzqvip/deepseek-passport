@@ -19,6 +19,36 @@ Rules for this log:
 
 ---
 
+## 2026-10-31 — Read-only from the serial console: the device was alive, and its voice threshold was deaf
+
+Six rounds of work had never touched the hardware, so this one started by looking instead of building. A
+read-only console session — no key injection, no flashing — answered three questions at once.
+
+The device is running and healthy. `ui screen` reports the pet screen with twelve children; `ui audit`
+reports six labels checked and none missing a glyph, so the Chinese interface really renders on the panel;
+`wifi status` and `prov status` answer normally. The build on it predates this session's changes — thirteen
+children would mean the microphone and work indicators, and `voice status` has no `stt=`/`record=` fields —
+so every claim in these entries about unflashed behaviour remains unverified.
+
+And it found a real one. `voice status` reported:
+
+```text
+gate=3694 (twice the measured room)
+```
+
+The boot warm-up measured a room **peak of 1,847**, and the threshold was twice the peak. Ordinary speech
+into this microphone is nowhere near 3,694, so the device would have discarded the owner speaking as silence —
+which is indistinguishable from "holding OK does nothing", the complaint that started this work.
+
+The rule is now derived from the room's **RMS** rather than its peak: a peak is what one door slam or one fan
+surge looks like, while RMS is what the room sounds like on average, and a voice is well above it. The
+threshold is clamped to 300..1500, so one loud minute can no longer deafen the device for the session. For the
+measured room, with a modest average, the threshold becomes 600. The derivation moved into `passport_gate.c`,
+where the tests include that exact 1,847 measurement and assert the old rule would have produced 3,694.
+
+`voice status` now prints the raw `room rms=… peak=…` beside the threshold, so the next time this number is
+wrong the console shows the two values that produced it instead of only the result.
+
 ## 2026-10-31 — The gate now fails for the reason it actually failed
 
 `./tools/validate.sh --firmware` has been unusable from this Windows checkout for the whole session, and the

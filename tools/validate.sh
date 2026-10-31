@@ -101,6 +101,10 @@ run_static_checks() {
         -o "${test_dir}/test_passport_navigation"
     "${test_dir}/test_passport_navigation"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_passport_gate.c main/passport_gate.c \
+        -o "${test_dir}/test_passport_gate"
+    "${test_dir}/test_passport_gate"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_passport_provider.c main/passport_provider.c \
         -o "${test_dir}/test_passport_provider"
     "${test_dir}/test_passport_provider"

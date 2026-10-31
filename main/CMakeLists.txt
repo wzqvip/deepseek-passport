@@ -14,6 +14,7 @@ idf_component_register(
          "passport_identity.c"
          "passport_json.c"
          "passport_fonts.c"
+         "passport_gate.c"
          "passport_portal.c"
          "passport_provision.c"
          "passport_qr.c"

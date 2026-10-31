@@ -15,6 +15,7 @@
 #include "freertos/task.h"
 #include "passport_app.h"
 #include "passport_audio.h"
+#include "passport_gate.h"
 #include "passport_chat.h"
 #include "passport_config_store.h"
 #include "passport_http.h"
@@ -78,37 +79,18 @@ static unsigned s_turns;
 // broken" and "this threshold does not suit this room", and only the owner can tell those apart.
 static volatile unsigned s_last_peak;
 static volatile int s_last_gate;
-// The peak below which a recording is treated as an empty room. -1 means "derive it from the room",
+// The threshold below which a recording is treated as an empty room. -1 means "derive it from the room",
 // which is the default: a fixed number is a guess about a room nobody has measured. The console can
-// pin a value, including 0 for "never treat anything as silence".
+// pin a value, including 0 for "never treat anything as silence". The derivation itself lives in
+// passport_gate, which is host-tested.
 static volatile int s_silence_peak = -1;
-
-// Below this, the codec's own noise would trip the gate; above it, a quiet speaker would be dropped.
-#define GATE_MIN 300
-#define GATE_MAX 4000
 
 // The threshold to use right now, and the reason for it.
 static int effective_gate(void)
 {
-    if (s_silence_peak >= 0) {
-        return s_silence_peak;
-    }
-    passport_audio_level_t floor;
-    if (!passport_audio_noise_floor(&floor)) {
-        // No measurement: fall back to the fixed number this used to be, and say so where the console
-        // can see it rather than pretending the value is informed.
-        return 400;
-    }
-    // Twice the room's own peak. This is a heuristic and is described as one: the room was measured
-    // by the boot warm-up, but the level of a person speaking into this microphone is something only
-    // a person can check, so the margin is deliberately generous rather than tuned.
-    int gate = (int)(floor.peak * 2u);
-    if (gate < GATE_MIN) {
-        gate = GATE_MIN;
-    } else if (gate > GATE_MAX) {
-        gate = GATE_MAX;
-    }
-    return gate;
+    passport_audio_level_t floor = { 0, 0, 0 };
+    const bool measured = passport_audio_noise_floor(&floor);
+    return passport_gate_effective(s_silence_peak, floor.rms, floor.peak, measured);
 }
 
 static void wake(void)
@@ -203,12 +185,13 @@ void passport_speech_report(char *out, size_t out_size)
         heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     snprintf(out, out_size,
-             "state=%s mic=%s turns=%u gate=%d%s last=\"%s\" transcript=\"%s\" "
+             "state=%s mic=%s turns=%u gate=%d%s room rms=%u peak=%u last=\"%s\" transcript=\"%s\" "
              "stt=%s tts=%s record=%u.%us",
              passport_voice_state_name(s_voice.state), s_voice.mic_open ? "open" : "closed",
              s_turns, effective_gate(),
-             (s_silence_peak >= 0) ? "" : (measured ? " (twice the measured room)" : " (fallback)"),
-             s_last, s_last_transcript,
+             (s_silence_peak >= 0) ? " (pinned)"
+                                   : (measured ? " (twice the room average)" : " (unmeasured)"),
+             floor.rms, floor.peak, s_last, s_last_transcript,
              direct_stt ? "direct" : "bridge", direct_tts ? "direct" : "bridge",
              (unsigned)(cap / 32000u), (unsigned)((cap % 32000u) / 3200u));
 }
