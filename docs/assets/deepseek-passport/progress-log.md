@@ -19,6 +19,23 @@ Rules for this log:
 
 ---
 
+## 2026-10-31 — A stored blob is bytes, not text
+
+The configuration that comes back from NVS was checked only for size and version. Nothing verified that
+its strings still ended inside their own fields, so one corrupt save — a power loss mid-write, or a blob
+written by a differently-built firmware — would have every later `strlen` and `%s` read past the struct:
+an SSID that never ends, a URL assembled from whatever followed it, or a crash in the console.
+
+`passport_cfg_check_stored()` now walks the same field table used for display and clamping. A string with
+no terminator inside its field makes the whole blob unusable, and the device falls back to defaults while
+saying so; a number outside its published range is clamped in place and the configuration is kept but
+reported dirty, because discarding working credentials over one byte would be worse. Both paths are
+host-tested, including the exact boundary where a field is filled to its last byte and terminated.
+
+The same pass found `passport_config_store_reset()` marking the configuration clean even when the NVS
+commit failed — a device would come back with the settings its owner believed were cleared. Saving now
+reports failure, and reset only marks clean when the erase actually took effect.
+
 ## 2026-10-31 — Source audit and functional repair
 
 Resumed from a clean `feature/deepseek-passport` checkout at `7e005bf`. Older claims of complete

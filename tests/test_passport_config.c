@@ -3,6 +3,7 @@
 // rendered.
 #include <assert.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "passport_config.h"
@@ -158,6 +159,44 @@ int main(void)
     assert(strlen(passport_cfg_status_name(PASSPORT_CFG_ERR_BAD_VALUE)) > 0);
     assert(strlen(passport_cfg_status_name(PASSPORT_CFG_ERR_TOO_LONG)) > 0);
     assert(strlen(passport_cfg_status_name((passport_cfg_status_t)99)) > 0);
+
+    // --- a stored configuration is bytes, not text --------------------------
+    // The blob comes back from NVS as it was written; nothing guarantees a terminator survived, and
+    // every later strlen() over these fields would read past the struct if one is missing.
+    passport_cfg_defaults(&cfg);
+    assert(passport_cfg_check_stored(&cfg) == PASSPORT_CFG_STORED_OK);
+
+    passport_cfg_defaults(&cfg);
+    memset(cfg.wifi_ssid, 'A', sizeof(cfg.wifi_ssid));   // no terminator anywhere in the field
+    assert(passport_cfg_check_stored(&cfg) == PASSPORT_CFG_STORED_UNUSABLE);
+    memset(cfg.wifi_ssid, 0, sizeof(cfg.wifi_ssid));
+    memset(cfg.llm_api_key, 'k', sizeof(cfg.llm_api_key));
+    assert(passport_cfg_check_stored(&cfg) == PASSPORT_CFG_STORED_UNUSABLE);
+
+    // A field filled exactly to its last byte and terminated is fine.
+    passport_cfg_defaults(&cfg);
+    memset(cfg.pet_name, 'p', sizeof(cfg.pet_name) - 1u);
+    cfg.pet_name[sizeof(cfg.pet_name) - 1u] = '\0';
+    assert(passport_cfg_check_stored(&cfg) == PASSPORT_CFG_STORED_OK);
+
+    // Wrong version is refused even when the bytes happen to be readable.
+    passport_cfg_defaults(&cfg);
+    cfg.version = PASSPORT_CFG_VERSION + 1u;
+    assert(passport_cfg_check_stored(&cfg) == PASSPORT_CFG_STORED_UNUSABLE);
+
+    // An out-of-range number is repaired in place rather than discarding working credentials.
+    passport_cfg_defaults(&cfg);
+    snprintf(cfg.llm_model, sizeof(cfg.llm_model), "%s", "deepseek-chat");
+    cfg.volume = 250u;
+    cfg.notify_mode = 9u;
+    assert(passport_cfg_check_stored(&cfg) == PASSPORT_CFG_STORED_REPAIRED);
+    assert(cfg.volume == 100u);
+    assert(cfg.notify_mode == 2u);
+    assert(strcmp(cfg.llm_model, "deepseek-chat") == 0);   // the rest was kept
+    // Repairing twice is a no-op: the second pass reports a clean configuration.
+    assert(passport_cfg_check_stored(&cfg) == PASSPORT_CFG_STORED_OK);
+
+    assert(passport_cfg_check_stored(NULL) == PASSPORT_CFG_STORED_UNUSABLE);
 
     return 0;
 }

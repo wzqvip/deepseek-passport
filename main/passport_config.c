@@ -180,3 +180,52 @@ const char *passport_cfg_status_name(passport_cfg_status_t status)
         return "?";
     }
 }
+
+passport_cfg_stored_t passport_cfg_check_stored(passport_config_t *cfg)
+{
+    if (cfg == NULL) {
+        return PASSPORT_CFG_STORED_UNUSABLE;
+    }
+    if (cfg->version != PASSPORT_CFG_VERSION) {
+        return PASSPORT_CFG_STORED_UNUSABLE;
+    }
+
+    bool repaired = false;
+    const uint8_t *base = (const uint8_t *)cfg;
+    for (int i = 0; i < FIELD_COUNT; i++) {
+        const passport_cfg_field_t *field = &FIELDS[i];
+        if (field->type == PASSPORT_CFG_TYPE_STR) {
+            // A blob is bytes, not text: nothing guarantees the terminator survived. Without this
+            // check every later strlen() or snprintf("%s") over the struct reads past its end, which
+            // turns a corrupt save into a crash or an endless URL. Refused outright — a truncated
+            // string cannot be repaired into the value that was meant.
+            if (memchr(base + field->offset, '\0', field->str_size) == NULL) {
+                return PASSPORT_CFG_STORED_UNUSABLE;
+            }
+            continue;
+        }
+        // A number outside its published range is repairable: the field has a defined clamp, and
+        // refusing the whole configuration over one byte would discard working credentials.
+        if (field->type == PASSPORT_CFG_TYPE_U8) {
+            uint8_t *value = (uint8_t *)(uintptr_t)(base + field->offset);
+            uint32_t v = *value;
+            uint32_t clamped = v < field->min_value ? field->min_value
+                             : v > field->max_value ? field->max_value : v;
+            if (clamped != v) {
+                *value = (uint8_t)clamped;
+                repaired = true;
+            }
+        } else if (field->type == PASSPORT_CFG_TYPE_U16) {
+            uint16_t *value = (uint16_t *)(uintptr_t)(base + field->offset);
+            uint32_t v = *value;
+            uint32_t clamped = v < field->min_value ? field->min_value
+                             : v > field->max_value ? field->max_value : v;
+            if (clamped != v) {
+                *value = (uint16_t)clamped;
+                repaired = true;
+            }
+        }
+    }
+    return repaired ? PASSPORT_CFG_STORED_REPAIRED : PASSPORT_CFG_STORED_OK;
+}
+

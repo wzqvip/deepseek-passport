@@ -95,3 +95,16 @@ passport_cfg_status_t passport_cfg_apply(passport_config_t *cfg,
                                          const char *value);
 
 const char *passport_cfg_status_name(passport_cfg_status_t status);
+
+// What a configuration read back from storage turned out to be.
+typedef enum {
+    PASSPORT_CFG_STORED_OK = 0,   // usable as stored
+    PASSPORT_CFG_STORED_REPAIRED, // usable, but a number was clamped into range
+    PASSPORT_CFG_STORED_UNUSABLE, // wrong version, or a string with no terminator: discard it
+} passport_cfg_stored_t;
+
+// Check a configuration that came from storage. Strings are bounds-checked for their terminator
+// because a stored blob is bytes rather than text, and numbers are clamped into their published
+// ranges in place. Returns how much had to be done; the caller replaces an unusable one with
+// defaults and does not pretend it was loaded.
+passport_cfg_stored_t passport_cfg_check_stored(passport_config_t *cfg);

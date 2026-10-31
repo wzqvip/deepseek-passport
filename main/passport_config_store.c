@@ -72,6 +72,30 @@ esp_err_t passport_config_store_init(bool *loaded)
     }
 
     s_config = stored;
+    switch (passport_cfg_check_stored(&s_config)) {
+    case PASSPORT_CFG_STORED_OK:
+        break;
+    case PASSPORT_CFG_STORED_REPAIRED:
+        // A number was out of range and has been clamped. The configuration is still the owner's, so
+        // it is kept — but what is stored no longer matches what is live, so it is dirty.
+        ESP_LOGW(TAG, "已保存配置有超出范围的数值,已收敛到范围内;下次保存会写回");
+        s_ready = true;
+        s_dirty = true;
+        if (loaded != NULL) {
+            *loaded = true;
+        }
+        return ESP_OK;
+    case PASSPORT_CFG_STORED_UNUSABLE:
+    default:
+        // A string with no terminator inside its field, or a different version. Keeping any of it
+        // would mean reading past the end of the struct on the first printf of an SSID or key.
+        ESP_LOGW(TAG, "已保存配置不可用(版本或字符串损坏);改用默认配置,需要重新设置并保存");
+        passport_cfg_defaults(&s_config);
+        s_ready = true;
+        s_dirty = true;
+        return ESP_ERR_INVALID_STATE;
+    }
+
     s_ready = true;
     s_dirty = false;
     if (loaded != NULL) {
@@ -141,7 +165,9 @@ esp_err_t passport_config_store_reset(void)
     }
     nvs_close(handle);
 
-    s_dirty = false;
+    // Only clean when the erase actually took effect. Reporting a reset as stored while NVS still
+    // holds the old blob is how a device comes back with settings its owner believed were cleared.
+    s_dirty = (err != ESP_OK);
     ESP_LOGI(TAG, "配置已恢复默认并清除已保存副本: %s", esp_err_to_name(err));
     return err;
 }
