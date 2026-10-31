@@ -208,6 +208,37 @@ const passport_portal_field_t *passport_portal_field(int index)
     return &FIELDS[index];
 }
 
+size_t passport_portal_form_value(const passport_config_t *cfg, const passport_cfg_field_t *field,
+                                  char *out, size_t out_size)
+{
+    if (out == NULL || out_size == 0u) {
+        return 0u;
+    }
+    out[0] = '\0';
+    if (cfg == NULL || field == NULL) {
+        return 0u;
+    }
+    const uint8_t *base = (const uint8_t *)cfg;
+    switch (field->type) {
+    case PASSPORT_CFG_TYPE_STR: {
+        // The stored bytes, whatever they are. An empty field is an empty string, not the console's
+        // "(empty)" — a form value that says "(empty)" is how a placeholder becomes data.
+        const char *value = (const char *)(base + field->offset);
+        const size_t len = strnlen(value, field->str_size);
+        const size_t copy = (len < out_size - 1u) ? len : out_size - 1u;
+        memcpy(out, value, copy);
+        out[copy] = '\0';
+        return copy;
+    }
+    case PASSPORT_CFG_TYPE_U8:
+        return (size_t)snprintf(out, out_size, "%u", (unsigned)*(const uint8_t *)(base + field->offset));
+    case PASSPORT_CFG_TYPE_U16:
+        return (size_t)snprintf(out, out_size, "%u", (unsigned)*(const uint16_t *)(base + field->offset));
+    default:
+        return 0u;
+    }
+}
+
 size_t passport_portal_escape(const char *in, char *out, size_t out_size)
 {
     if (out == NULL || out_size == 0u) {

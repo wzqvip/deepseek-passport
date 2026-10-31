@@ -13,6 +13,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "passport_config.h"
+
 typedef enum {
     PASSPORT_PORTAL_ROUTE_ROOT = 0,
     PASSPORT_PORTAL_ROUTE_SAVE,
@@ -55,6 +57,16 @@ typedef struct {
 
 int passport_portal_field_count(void);
 const passport_portal_field_t *passport_portal_field(int index);
+
+// The text a form input must carry for this field.
+//
+// This is deliberately not the console's rendering. The console shows an empty field as the words
+// "(empty)", and a form value is data: putting that string into `value="..."` means pressing 保存 writes
+// yesterday's placeholder into the configuration. That is not hypothetical — a device was found with
+// stt_base_url = "(empty)", which is non-empty, so the firmware chose the direct voice path and refused
+// every turn. An empty field renders as an empty string here, and numbers render as their decimal value.
+size_t passport_portal_form_value(const passport_config_t *cfg, const passport_cfg_field_t *field,
+                                  char *out, size_t out_size);
 
 // What the console's diagnostics page reports. Assembled by the device and rendered here, so the shape
 // and the escaping can be tested without a browser — and so that nothing secret can be added by accident:

@@ -1,6 +1,7 @@
 // Host tests for the provisioning portal's request logic.
 #include <assert.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "passport_portal.h"
@@ -260,6 +261,46 @@ int main(void)
     assert(passport_portal_diagnostics_json(NULL, json, sizeof(json)) == 0u);
     assert(passport_portal_diagnostics_json(&diag, NULL, sizeof(json)) == 0u);
     assert(passport_portal_diagnostics_json(&diag, json, 0u) == 0u);
+
+    // --- a form value is data, not a display string --------------------------
+    // The device was found with stt_base_url = "(empty)" because the setup page rendered the console's
+    // placeholder into the input's value attribute, and pressing save stored it. That made a field that is
+    // empty look configured, and the firmware then chose the direct voice path and refused every turn.
+    passport_config_t form_cfg;
+    passport_cfg_defaults(&form_cfg);
+    const passport_cfg_field_t *f_stt = passport_cfg_find("stt_base_url");
+    const passport_cfg_field_t *f_vol = passport_cfg_find("volume");
+    assert(f_stt != NULL && f_vol != NULL);
+
+    char form_value[160];
+    assert(passport_portal_form_value(&form_cfg, f_stt, form_value, sizeof(form_value)) == 0u);
+    assert(form_value[0] == '\0');   // empty, not "(empty)"
+    assert(strcmp(form_value, "(empty)") != 0);
+
+    snprintf(form_cfg.stt_base_url, sizeof(form_cfg.stt_base_url), "%s", "https://api.siliconflow.cn/v1");
+    assert(passport_portal_form_value(&form_cfg, f_stt, form_value, sizeof(form_value)) ==
+           strlen("https://api.siliconflow.cn/v1"));
+    assert(strcmp(form_value, "https://api.siliconflow.cn/v1") == 0);
+
+    // A number renders as its decimal value, so a round trip through the form is stable.
+    assert(passport_portal_form_value(&form_cfg, f_vol, form_value, sizeof(form_value)) > 0u);
+    assert(strcmp(form_value, "80") == 0);
+
+    // A value longer than the buffer is truncated, never left unterminated.
+    char tiny_value[8];
+    assert(passport_portal_form_value(&form_cfg, f_stt, tiny_value, sizeof(tiny_value)) == 7u);
+    assert(strcmp(tiny_value, "https:/") == 0);
+
+    // A secret is not special here: the caller decides whether to render it at all.
+    const passport_cfg_field_t *f_key = passport_cfg_find("llm_api_key");
+    assert(f_key != NULL && f_key->secret);
+    snprintf(form_cfg.llm_api_key, sizeof(form_cfg.llm_api_key), "%s", "sk-test");
+    assert(passport_portal_form_value(&form_cfg, f_key, form_value, sizeof(form_value)) == 7u);
+
+    assert(passport_portal_form_value(NULL, f_stt, form_value, sizeof(form_value)) == 0u);
+    assert(passport_portal_form_value(&form_cfg, NULL, form_value, sizeof(form_value)) == 0u);
+    assert(passport_portal_form_value(&form_cfg, f_stt, NULL, sizeof(form_value)) == 0u);
+    assert(passport_portal_form_value(&form_cfg, f_stt, form_value, 0u) == 0u);
 
     return 0;
 }

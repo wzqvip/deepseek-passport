@@ -19,6 +19,47 @@ Rules for this log:
 
 ---
 
+## 2026-10-31 — Flashed, and the device immediately produced two bugs no build could show
+
+The owner authorised flashing. The image built from commit `4306046` was written **segmented** at COM47 so the
+stored Wi-Fi credentials and keys survived, and the device then reported things that no host test could.
+
+**The setup page had been corrupting the configuration.** `voice status` printed `stt=direct` with both
+`stt_base_url` and `stt_model` empty, and the next turn failed with `invalid direct STT configuration` —
+the direct path chosen for an empty configuration. A temporary diagnostic byte-print settled it: the first
+byte of `stt_base_url` was 40, `'('`, because the field contained the literal text **`(empty)`**. The setup
+page embedded `passport_cfg_format()`'s *display* output into each input's `value=` attribute, so every empty
+field appeared as "(empty)", and pressing the save button stored that placeholder as data. A field that is
+empty then looks configured, which is exactly the trap it created.
+
+The form value now comes from a new pure function, `passport_portal_form_value()`, which returns the raw
+stored bytes — empty stays empty, numbers render as decimals — with a host test that asserts an empty field
+renders as `""` and never as the console's placeholder.
+
+**HTTPS could not allocate, so the device could not talk to any provider.** `app` reported
+`free=29364 B, largest=15360 B`; a TLS session needs roughly twenty kilobytes contiguous, so every cloud
+call would have failed. The LVGL draw buffer was 40 lines (19 KB) with a 24 KB LVGL pool on a board with no
+PSRAM. Reducing the buffer to 20 lines and the pool to 20 KB raised the device to `free=40204 B,
+largest=29696 B`, and the same build then proved a real session:
+
+```text
+net probe https://api.deepseek.com   ->  HTTP 401, 183 bytes, 1067 ms
+llm probe                            ->  HTTP 200, 531 bytes, 1405 ms (model deepseek-flash, key set)
+```
+
+**And the app-to-bridge authentication works end to end**: with the bridge running and the same token on
+both sides, `work client` changed from `HTTP 401` to `last="no work to report"`. The navigation reducer was
+confirmed on the panel too — long UP reaches the settings screen, long OK returns to the pet, long DOWN
+reaches the work screen — and the silence gate now reads `gate=300` against `room rms=135`, where the old
+firmware read 3,694.
+
+One more finding is recorded rather than fixed: `deepseek-flash` answered the probe with an empty `content`
+and a `reasoning_content` field. The chat path reads only `content`, so a reasoning model can produce a
+"reply" with nothing to show. That is the next thing to handle.
+
+Direct recording still reports `record=0.0s`: the capacity rule reserves 80 KB and the device has 40 KB
+free, so a computer-free voice turn remains impossible and the bridge carries every turn.
+
 ## 2026-10-31 — The corner says "ERR" instead of failing silently
 
 The device observed on 2026-10-31 had polled its bridge fourteen times and failed every one, and its screen

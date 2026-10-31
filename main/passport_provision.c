@@ -138,9 +138,15 @@ static int render_root(char *out, size_t out_size)
                              "<input name=%s type=password autocomplete=off>",
                              field->label, escaped, field->form_key);
         } else {
+            // The raw value, never the display form: see passport_portal_form_value. A display string in a
+            // form value is how the console's "(empty)" once became the stored configuration.
+            char raw[128];
+            char raw_escaped[192];
+            passport_portal_form_value(cfg, target, raw, sizeof(raw));
+            passport_portal_escape(raw, raw_escaped, sizeof(raw_escaped));
             used += snprintf(out + used, out_size - (size_t)used,
                              "<label>%s</label><input name=%s value=\"%s\" autocapitalize=off>",
-                             field->label, field->form_key, escaped);
+                             field->label, field->form_key, raw_escaped);
         }
         if (used < 0 || (size_t)used >= out_size) {
             ESP_LOGW(TAG, "设置页在 %s 处被截断", field->form_key);
