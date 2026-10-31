@@ -85,6 +85,9 @@ STATUS_FILE = "work-status.json"
 
 MAX_AUDIO_BYTES = SAMPLE_RATE * 2 * 60
 MAX_JSON_BYTES = 4096
+# The longest a status long-poll may be held. The device's own request timeout is twenty seconds, so this
+# leaves it room to answer rather than time out on a request that was about to succeed.
+MAX_WAIT_S = 15.0
 MAX_TEXT_BYTES = 4096
 REQUEST_TIMEOUT_S = 15
 
@@ -150,6 +153,12 @@ class BridgeServer(ThreadingHTTPServer):
         self.request_slots = threading.BoundedSemaphore(32)
         self.provider, self.token = provider, token
         self.lock = threading.Lock()
+        # Long-poll support: the device holds one request open instead of asking again every few seconds,
+        # and a publish wakes it immediately. That is what makes the pocket control surface feel live —
+        # a five-second poll means up to five seconds between the computer producing an answer and the
+        # device showing it.
+        self.status_cond = threading.Condition()
+        self.status_version = 0
         self.voice_gate = threading.Lock()
         self.speak_gate = threading.Lock()
         self.turns = OrderedDict()
@@ -560,6 +569,9 @@ class Handler(BaseHTTPRequestHandler):
                 document["question_id"] = uuid.uuid4().hex
             with self.server.lock:
                 self.server.status = document
+            with self.server.status_cond:
+                self.server.status_version += 1
+                self.server.status_cond.notify_all()
             self._json(document)
             return
         if path == "/answer":
@@ -627,8 +639,34 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, pcm, "audio/L16;rate=16000;channels=1")
             return
         if path == "/work-status":
+            # Long-poll: the device asks once and the bridge holds the request until there is something to
+            # say, or the wait expires. Without this the pocket control surface lags by up to a full poll
+            # interval, which is the difference between "shows the answer" and "shows the answer eventually".
+            try:
+                wait_s = float((query.get("wait") or ["0"])[0])
+            except ValueError:
+                raise RequestError(400, "wait must be a number") from None
+            wait_s = max(0.0, min(wait_s, MAX_WAIT_S))
+            try:
+                since = int((query.get("since") or ["-1"])[0])
+            except ValueError:
+                raise RequestError(400, "since must be an integer") from None
+
+            with self.server.status_cond:
+                if wait_s > 0 and since == self.server.status_version:
+                    self.server.status_cond.wait_for(
+                        lambda: self.server.status_version != since, timeout=wait_s)
+                version = self.server.status_version
+            if wait_s > 0 and since == version:
+                # Nothing changed inside the wait. Answering with a small, explicit document is what lets
+                # the device keep the connection open across updates instead of treating the wait as a
+                # failed fetch.
+                self._json({"unchanged": 1, "version": version})
+                return
             with self.server.lock:
                 status = self.server.get_status()
+            status = dict(status)
+            status["version"] = version
             self._json(status)
             return
         if path == "/answers":

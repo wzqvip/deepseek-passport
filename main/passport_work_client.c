@@ -10,6 +10,7 @@
 #include "passport_app.h"
 #include "passport_config_store.h"
 #include "passport_http.h"
+#include "passport_json.h"
 #include "passport_notify.h"
 #include "passport_speech.h"
 #include "passport_power.h"
@@ -40,6 +41,9 @@ static int s_failures;
 // enough that a wrong address shows on the screen within about ten seconds instead of never.
 #define WORK_LINK_FAILURES_SHOWN 2
 static int s_consecutive_failures;
+// The bridge's status version this device has already displayed; sent as since so a long-poll returns
+// only when something changed.
+static int s_status_version;
 
 static void build_url(const char *path, char *out, size_t out_size)
 {
@@ -138,7 +142,11 @@ static void poll_once(void)
     }
 
     char url[URL_MAX];
-    build_url(PASSPORT_WORK_PATH_STATUS, url, sizeof(url));
+    // Long-poll: the bridge holds this request until there is something new or the wait expires, so the
+    // screen reacts in milliseconds instead of waiting for the next interval. "since" is the version this
+    // device has already seen; a timeout answers with {"unchanged":true}, which is success, not a failure.
+    snprintf(url, sizeof(url), "%s%s?wait=15&since=%d", cfg->bridge_url, PASSPORT_WORK_PATH_STATUS,
+             s_status_version);
 
     static char document[STATUS_MAX];
     passport_http_result_t result;
@@ -146,7 +154,8 @@ static void poll_once(void)
         .url = url,
         .api_key = cfg->bridge_token,
         .body = NULL,   // a GET
-        .timeout_ms = 8000u,
+        // Longer than the bridge's maximum hold (15 s) so a held request is answered rather than cut off.
+        .timeout_ms = 20000u,
     };
     const esp_err_t err = passport_http_request(&request, &result, document, sizeof(document));
     s_polls++;
@@ -160,6 +169,20 @@ static void poll_once(void)
     if (result.status == 404) {
         s_consecutive_failures = 0;   // reachable and authenticated: the link is fine
         snprintf(s_last, sizeof(s_last), "no work to report");
+        return;
+    }
+    // A long-poll that nothing disturbed. The bridge answered, the link is fine, and there is nothing to
+    // put on the screen — three different things from a failed fetch.
+    bool found = false;
+    const int version = passport_json_int(document, passport_json_len(document), "version", &found);
+    if (found) {
+        s_status_version = version;
+    }
+    bool unchanged = false;
+    const int flag = passport_json_int(document, passport_json_len(document), "unchanged", &unchanged);
+    if (unchanged) {   // presence is enough; the bridge sends 1, and a JSON true must not become a parse failure
+        s_consecutive_failures = 0;
+        snprintf(s_last, sizeof(s_last), "bridge quiet (version %d)", s_status_version);
         return;
     }
     if (result.status != 200 || result.truncated) {
@@ -233,8 +256,11 @@ static void client_task(void *arg)
     (void)arg;
     while (s_running) {
         poll_once();
-        // Sleep in short steps so a request to poll now is honoured quickly.
-        for (int waited = 0; s_running && waited < POLL_INTERVAL_MS; waited += 100) {
+        // The poll itself now waits for news, so the gap between requests is short: a long-poll that has
+        // just been answered should be renewed promptly, or the device is briefly deaf between requests.
+        // After a failure the back-off is longer, which keeps a wrong address from becoming a busy loop.
+        const int gap = (s_consecutive_failures > 0) ? POLL_INTERVAL_MS : 200;
+        for (int waited = 0; s_running && waited < gap; waited += 100) {
             if (s_poll_now) {
                 break;
             }

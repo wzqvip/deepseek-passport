@@ -153,5 +153,53 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.post("/answer", {"answer": "no"})[0], 400)
 
 
+    def status_json(self, path, timeout=20):
+        connection = http.client.HTTPConnection(*self.server.server_address, timeout=timeout)
+        connection.request("GET", path, headers={"Authorization": "Bearer test-only-token"})
+        response = connection.getresponse()
+        body = response.read()
+        status = response.status
+        connection.close()
+        return status, json.loads(body)
+
+    def test_status_long_poll_wakes_on_publish(self):
+        # The device holds one request open; a publish from the desktop wakes it. Without this the pocket
+        # control surface lags by a whole poll interval, which is the difference between showing an answer
+        # and showing it eventually.
+        import time
+        # A bridge with nothing to report is 404 by design, so publish once before holding a request.
+        self.post('/work-status', {'task': 'indexing', 'state': 'running'})
+        code, first = self.status_json('/work-status?wait=1&since=-1')
+        self.assertEqual(code, 200)
+        version = first['version']
+        started = time.time()
+
+        def publish_later():
+            time.sleep(0.5)
+            self.post("/work-status", {"task": "deploy", "state": "running"})
+
+        publisher = threading.Thread(target=publish_later, daemon=True)
+        publisher.start()
+        code, held = self.status_json(f"/work-status?wait=10&since={version}")
+        waited = time.time() - started
+        publisher.join(5)
+        self.assertEqual(code, 200)
+        self.assertEqual(held.get("task"), "deploy")
+        self.assertGreater(held.get("version"), version)
+        self.assertLess(waited, 5.0)
+
+    def test_status_long_poll_reports_quiet_bridge_as_unchanged(self):
+        self.post('/work-status', {'task': 'indexing', 'state': 'running'})
+        code, first = self.status_json('/work-status?wait=1&since=-1')
+        self.assertEqual(code, 200)
+        code, quiet = self.status_json(f"/work-status?wait=1&since={first['version']}")
+        self.assertEqual(code, 200)
+        self.assertTrue(quiet.get("unchanged"))
+        self.assertEqual(quiet.get("version"), first["version"])
+
+    def test_status_wait_must_be_a_number(self):
+        status, _ = self.request("GET", "/work-status?wait=soon&since=-1")
+        self.assertGreaterEqual(status, 400)
+
 if __name__ == "__main__":
     unittest.main()

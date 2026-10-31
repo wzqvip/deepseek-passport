@@ -19,6 +19,37 @@ Rules for this log:
 
 ---
 
+## 2026-10-31 — The pocket control loop works, and it is now immediate
+
+The owner described the product precisely: an accessory for the computer, services on the computer,
+streaming allowed, and the point is *handy control* — see a preview of an answer and choose what happens
+next, from a pocket. That reframes the device from "pet that talks" to "control surface", and it makes the
+five-second status poll the wrong mechanism: up to five seconds between the computer producing something and
+the device showing it is the difference between a remote control and a notification that arrives later.
+
+`GET /work-status?wait=N&since=V` is now a long-poll. The bridge holds the request, wakes it the instant a
+desktop publishes a new document, and answers `{"unchanged":1,"version":V}` when nothing happened inside the
+window. The device sends its last seen version and renews immediately after each answer, backing off only
+after a failure. Three tests cover it: a publish wakes a held request in well under a second, a quiet bridge
+returns `unchanged` instead of an error, and a non-numeric `wait` is refused.
+
+One defect was found in the first attempt, on the device: the bridge first answered `"unchanged": true`, a
+JSON boolean, and the device's integer reader turned it into a parse failure — the same trap the `ready`
+field documented months ago. The bridge now emits `1` and the device treats the field's *presence* as the
+answer.
+
+Verified on the hardware, end to end:
+
+```text
+published  a task named "refactor index.ts", state waiting, question "how should I change it?",
+           with three options, the first being "conservative: comments only"
+device     screen work, showing the task, the question, and "> conservative: comments only"
+pressed OK work client: last="answer accepted"
+bridge     GET /answers?question_id=412c5592 -> ready=1, answer = the first option
+```
+
+That is the whole loop the owner asked for at its smallest useful size: the computer publishes state and
+choices, the device shows the preview and the options, a button press returns the choice to the computer.
 ## 2026-10-31 — Flashed, and the device immediately produced two bugs no build could show
 
 The owner authorised flashing. The image built from commit `4306046` was written **segmented** at COM47 so the
