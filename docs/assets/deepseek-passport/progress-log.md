@@ -19,6 +19,22 @@ Rules for this log:
 
 ---
 
+## 2026-10-31 — The console answers which route and how long, and standby can be tested without a finger
+
+Two questions the owner otherwise has to reconstruct from documentation are now printed by
+`voice status`: which route a turn will take — `stt=direct` or `bridge`, and the same for `tts` — and how
+many seconds of recording the current heap allows. Both change with configuration and with memory, so a
+number read from the device is the only honest source.
+
+`power standby` joins the console too. The shipped standby — backlight off, everything else running — was
+otherwise reachable only from the menu or a double press, which makes it untestable without a finger on the
+device. `power sleep` remains in place and remains refused: it now says so in its own output instead of
+returning an error code the caller has to interpret.
+
+The serial-command reference was wrong about four of these behaviours at once — it still promised deep sleep
+with a timer wake, described `voice speak` as playing rather than queueing, and did not mention the route
+report — so both languages were corrected against the code rather than against the previous document.
+
 ## 2026-10-31 — The corner answers the two questions a glance actually asks
 
 The status strip reported the network and the battery, which are the two the upstream convention names.

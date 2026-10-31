@@ -1175,6 +1175,17 @@ static int cmd_power(int argc, char **argv)
         return 1;
     }
 
+    if (strcmp(argv[1], "standby") == 0) {
+        // The shipped standby: backlight off, everything else still running, so a key wakes it without a
+        // reboot. Offered from the console because the same thing is otherwise reachable only by the menu
+        // or a double press, and checking it should not need a finger.
+        passport_power_standby();
+        char report[128];
+        passport_power_report(report, sizeof(report));
+        printf("power: standby; %s\n", report);
+        return 0;
+    }
+
     if (strcmp(argv[1], "sleep") == 0) {
         uint32_t seconds = 0u;
         if (argc > 2) {

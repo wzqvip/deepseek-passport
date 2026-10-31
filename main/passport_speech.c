@@ -184,12 +184,23 @@ void passport_speech_report(char *out, size_t out_size)
     }
     passport_audio_level_t floor;
     const bool measured = passport_audio_noise_floor(&floor);
+    // Which route a turn will take, and how much of a sentence it can hold, are the two things the owner
+    // otherwise has to reconstruct from documentation. They are printed with the rest of the state.
+    const passport_config_t *cfg = passport_config_current();
+    const bool direct_stt = (cfg->stt_base_url[0] != '\0') && (cfg->stt_model[0] != '\0');
+    const bool direct_tts = (cfg->tts_base_url[0] != '\0') && (cfg->tts_model[0] != '\0');
+    const size_t cap = passport_provider_record_capacity(
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     snprintf(out, out_size,
-             "state=%s mic=%s turns=%u gate=%d%s last=\"%s\" transcript=\"%s\"",
+             "state=%s mic=%s turns=%u gate=%d%s last=\"%s\" transcript=\"%s\" "
+             "stt=%s tts=%s record=%u.%us",
              passport_voice_state_name(s_voice.state), s_voice.mic_open ? "open" : "closed",
              s_turns, effective_gate(),
              (s_silence_peak >= 0) ? "" : (measured ? " (twice the measured room)" : " (fallback)"),
-             s_last, s_last_transcript);
+             s_last, s_last_transcript,
+             direct_stt ? "direct" : "bridge", direct_tts ? "direct" : "bridge",
+             (unsigned)(cap / 32000u), (unsigned)((cap % 32000u) / 3200u));
 }
 
 // A short write is legal. Never advance to another frame until all bytes are sent.
