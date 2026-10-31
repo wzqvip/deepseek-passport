@@ -197,6 +197,7 @@ one is still open.
 | [`voice-backends.md`](voice-backends.md) | The provider survey behind the voice decision |
 | [`bridge-protocol.md`](bridge-protocol.md) | The device-to-companion contract |
 | [`serial-cli.md`](serial-cli.md) | The console, and the two contracts it keeps |
+| [`troubleshooting.md`](troubleshooting.md) | Symptoms the owner reports, and the console reading that separates their causes |
 | [`progress-log.md`](progress-log.md) | Every session: what was built, what was measured, what was wrong |
 | [`main/`](../../../main) | The application, one module per concern |
 | [`components/bsp/`](../../../components/bsp) | The board support package, upstream and reused |

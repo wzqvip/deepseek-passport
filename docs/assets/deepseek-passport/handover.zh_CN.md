@@ -170,6 +170,7 @@ python tools/mock_bridge.py --port 8080 --scenario running
 | [`voice-backends.md`](voice-backends.md) | 语音决策背后的提供商调研 |
 | [`bridge-protocol.md`](bridge-protocol.md) | 设备与配套服务之间的契约 |
 | [`serial-cli.md`](serial-cli.md) | 控制台,以及它遵守的两条契约 |
+| [`troubleshooting.zh_CN.md`](troubleshooting.zh_CN.md) | 主人报告的症状,以及区分它们原因的控制台读法 |
 | [`progress-log.md`](progress-log.md) | 每一次会话:做了什么、量到了什么、哪里错了 |
 | [`main/`](../../../main) | 应用本体,一个关注点一个模块 |
 | [`components/bsp/`](../../../components/bsp) | 板级支持包,上游的,被复用 |

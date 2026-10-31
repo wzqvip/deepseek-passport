@@ -19,6 +19,36 @@ Rules for this log:
 
 ---
 
+## 2026-10-31 — The device had nowhere to send a turn, and the console said so
+
+A second read-only session, this time reading the configuration, found the reason "holding OK does nothing"
+could not have worked on that device with any firmware:
+
+```text
+  stt_base_url   (empty)                          <- every turn therefore goes through the bridge
+  bridge_url     http://192.168.2.183:8080        <- the computer's address from an earlier session
+work client: polls=14 failures=14 last="fetch failed: ESP_ERR_HTTP_CONNECT"
+```
+
+The computer's LAN address had changed (it is `192.168.2.137` now, and the device sits on `192.168.3.75` in
+the same /22), so the stored address pointed at a host that no longer exists, and no bridge was running. The
+device had failed every single poll and said nothing about it on screen.
+
+Pointing `bridge_url` at the computer and running the bridge's `--fake` provider changed the failure from
+`ESP_ERR_HTTP_CONNECT` to **`HTTP 401`** — which is the *proof that the network path works*, and the second
+finding of the session: the bridge requires the Bearer token, and firmware older than this session's
+authentication work does not send one. So an up-to-date bridge rejects an old device, by design.
+
+Three distinct causes for one sentence, then: the silent threshold of 3,694 above, a wrong address, and a
+missing token — and none of them was a broken button. They are now written down as
+[troubleshooting](troubleshooting.md), with the exact console text that separates them, because the next
+person to see "holding OK does nothing" should not have to rediscover this in a night's work.
+
+The temporary fake bridge was stopped afterwards and its generated token file deleted; the device keeps the
+corrected address, which is the only state change made to it. No audio was recorded in this session: the
+`401` on `/work-status` already proved the same authentication gap, so a microphone upload would have added
+privacy risk without adding evidence.
+
 ## 2026-10-31 — Read-only from the serial console: the device was alive, and its voice threshold was deaf
 
 Six rounds of work had never touched the hardware, so this one started by looking instead of building. A
