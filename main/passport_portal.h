@@ -18,6 +18,7 @@ typedef enum {
     PASSPORT_PORTAL_ROUTE_SAVE,
     PASSPORT_PORTAL_ROUTE_STATUS,
     PASSPORT_PORTAL_ROUTE_CONFIG,
+    PASSPORT_PORTAL_ROUTE_DIAGNOSTICS,
     PASSPORT_PORTAL_ROUTE_REDIRECT,   // a captive-portal probe: answer with a redirect
     PASSPORT_PORTAL_ROUTE_NOT_FOUND,
 } passport_portal_route_t;
@@ -54,3 +55,26 @@ typedef struct {
 
 int passport_portal_field_count(void);
 const passport_portal_field_t *passport_portal_field(int index);
+
+// What the console's diagnostics page reports. Assembled by the device and rendered here, so the shape
+// and the escaping can be tested without a browser — and so that nothing secret can be added by accident:
+// every field below is a measurement or a state name, never a configured value.
+typedef struct {
+    const char *firmware_version;   // may be NULL or empty
+    const char *ip;                 // may be NULL or empty
+    const char *wifi_state;         // e.g. "connected"
+    const char *pet_mood;           // e.g. "idle"
+    const char *voice_state;        // e.g. "idle", "listening"
+    unsigned heap_free;
+    unsigned heap_largest;
+    unsigned uptime_seconds;
+    unsigned turns;                 // completed voice turns since boot
+    int rssi;                       // dBm, or 0 when unavailable
+    bool microphone_open;
+} passport_portal_diagnostics_t;
+
+// Render the diagnostics as one JSON object. Returns the length written, excluding the terminator, or 0
+// when the buffer is too small to hold a complete object: a truncated JSON body would be a worse answer
+// than none, because the browser's parse error says nothing about the device.
+size_t passport_portal_diagnostics_json(const passport_portal_diagnostics_t *diag,
+                                        char *out, size_t out_size);

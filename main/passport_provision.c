@@ -19,8 +19,11 @@
 #include "freertos/task.h"
 #include "passport_config_store.h"
 #include "passport_identity.h"
+#include "passport_pet.h"
 #include "passport_portal.h"
+#include "passport_speech.h"
 #include "passport_wifi.h"
+#include "esp_app_desc.h"
 
 static const char *TAG = "passport_prov";
 
@@ -150,7 +153,8 @@ static int render_root(char *out, size_t out_size)
                          "<button type=submit>保存</button></form>"
                          "<p class=sub style=\"margin-top:18px\">"
                          "<a style=\"color:#4D6BFE\" href=/api/status>状态</a> · "
-                         "<a style=\"color:#4D6BFE\" href=/api/config>全部配置</a></p>"
+                         "<a style=\"color:#4D6BFE\" href=/api/config>全部配置</a> · "
+                         "<a style=\"color:#4D6BFE\" href=/api/diagnostics>诊断</a></p>"
                          "</body></html>");
     }
     return used;
@@ -194,6 +198,42 @@ static int render_config(char *out, size_t out_size)
     return written;
 }
 
+static int render_diagnostics(char *out, size_t out_size)
+{
+    // The console's own report of what the device is doing. Assembled from the modules that own the
+    // answers — nothing here is a configured value, so nothing here can leak a key.
+    int rssi = 0;
+    wifi_ap_record_t ap_info;
+    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        rssi = ap_info.rssi;
+    }
+    char ip[20];
+    passport_wifi_ip(ip, sizeof(ip));
+    passport_portal_diagnostics_t diag = {
+        .firmware_version = esp_app_get_description()->version,
+        .ip = ip,
+        .wifi_state = passport_wifi_state_name(passport_wifi_state()),
+        .pet_mood = passport_pet_mood_name(passport_pet_mood()),
+        .voice_state = passport_speech_state_name(),
+        .heap_free = (unsigned)esp_get_free_heap_size(),
+        .heap_largest = (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        .uptime_seconds = (unsigned)(esp_timer_get_time() / 1000000),
+        .turns = passport_speech_turns(),
+        .rssi = rssi,
+        .microphone_open = passport_speech_listening(),
+    };
+    char json[512];
+    const size_t len = passport_portal_diagnostics_json(&diag, json, sizeof(json));
+    if (len == 0u) {
+        return -1;
+    }
+    if (len + 1u > out_size) {
+        return -1;
+    }
+    memcpy(out, json, len + 1u);
+    return (int)len;
+}
+
 int passport_provision_render(passport_portal_route_t route, char *out, size_t out_size)
 {
     if (out == NULL || out_size == 0u) {
@@ -207,6 +247,8 @@ int passport_provision_render(passport_portal_route_t route, char *out, size_t o
         return render_status(out, out_size);
     case PASSPORT_PORTAL_ROUTE_CONFIG:
         return render_config(out, out_size);
+    case PASSPORT_PORTAL_ROUTE_DIAGNOSTICS:
+        return render_diagnostics(out, out_size);
     default:
         return -1;
     }

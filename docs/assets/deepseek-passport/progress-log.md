@@ -19,6 +19,23 @@ Rules for this log:
 
 ---
 
+## 2026-10-31 — The device-hosted console can finally say what the device is doing
+
+The requirement asks the web console for diagnostics — heap, largest block, uptime, signal, and recent
+state — and it had none of them: the page could set configuration and read a status object, and nothing in
+it reported whether the pet was speaking, listening or idle, or whether memory was running out. A page that
+can configure everything and observe nothing is half a console.
+
+`/api/diagnostics` now answers with one JSON object: firmware version, address, Wi-Fi state, pet mood, voice
+state, free heap, largest free block, uptime, turns since boot, RSSI and whether the microphone is open. It
+is linked from the setup page. Every field is a measurement or a state name — no configured value appears
+there — so the endpoint cannot become a way to read a key back.
+
+The shape and the escaping are host-tested rather than browser-tested: a quote or a backslash in a version
+string cannot end the object early, a missing optional string renders as an empty string rather than as the
+word `null`, and a buffer too small yields **nothing at all** instead of half an object, because a browser
+parse error says nothing about the device.
+
 ## 2026-10-31 — The console answers which route and how long, and standby can be tested without a finger
 
 Two questions the owner otherwise has to reconstruct from documentation are now printed by

@@ -204,5 +204,62 @@ int main(void)
     }
     assert(passport_portal_field_count() == writable);
 
+    // --- diagnostics ---------------------------------------------------------
+    // The console's diagnostics answer is the one place the device reports what it is doing without a
+    // serial cable, so its shape and its escaping are checked here rather than in a browser.
+    assert(passport_portal_route("/api/diagnostics") == PASSPORT_PORTAL_ROUTE_DIAGNOSTICS);
+    assert(passport_portal_route("/api/diagnostics/") == PASSPORT_PORTAL_ROUTE_DIAGNOSTICS);
+    assert(strcmp(passport_portal_route_name(PASSPORT_PORTAL_ROUTE_DIAGNOSTICS), "diagnostics") == 0);
+
+    passport_portal_diagnostics_t diag = {
+        .firmware_version = "1.2.3",
+        .ip = "192.168.3.75",
+        .wifi_state = "connected",
+        .pet_mood = "idle",
+        .voice_state = "listening",
+        .heap_free = 152345u,
+        .heap_largest = 110592u,
+        .uptime_seconds = 3601u,
+        .turns = 7u,
+        .rssi = -58,
+        .microphone_open = true,
+    };
+    char json[640];
+    size_t len = passport_portal_diagnostics_json(&diag, json, sizeof(json));
+    assert(len > 0u && len == strlen(json));
+    assert(strstr(json, "\"firmware\":\"1.2.3\"") != NULL);
+    assert(strstr(json, "\"ip\":\"192.168.3.75\"") != NULL);
+    assert(strstr(json, "\"heap\":152345") != NULL);
+    assert(strstr(json, "\"largest\":110592") != NULL);
+    assert(strstr(json, "\"uptime\":3601") != NULL);
+    assert(strstr(json, "\"turns\":7") != NULL);
+    assert(strstr(json, "\"rssi\":-58") != NULL);
+    assert(strstr(json, "\"mic\":true") != NULL);
+    assert(json[len - 1u] == '}');
+
+    // A quote or a backslash in a string field must not be able to end the object early.
+    diag.firmware_version = "1.2\"3\\x";
+    len = passport_portal_diagnostics_json(&diag, json, sizeof(json));
+    assert(len > 0u);
+    assert(strstr(json, "\"firmware\":\"1.2\\\"3\\\\x\"") != NULL);
+    assert(json[len - 1u] == '}');
+
+    // Missing optional strings render as empty strings rather than as the word "null".
+    diag.firmware_version = NULL;
+    diag.ip = NULL;
+    len = passport_portal_diagnostics_json(&diag, json, sizeof(json));
+    assert(len > 0u);
+    assert(strstr(json, "\"firmware\":\"\"") != NULL);
+    assert(strstr(json, "\"ip\":\"\"") != NULL);
+
+    // A buffer too small gets nothing at all: half a JSON object would be a browser parse error that says
+    // nothing about the device.
+    char cramped[64];
+    assert(passport_portal_diagnostics_json(&diag, cramped, sizeof(cramped)) == 0u);
+    assert(cramped[0] == '\0');
+    assert(passport_portal_diagnostics_json(NULL, json, sizeof(json)) == 0u);
+    assert(passport_portal_diagnostics_json(&diag, NULL, sizeof(json)) == 0u);
+    assert(passport_portal_diagnostics_json(&diag, json, 0u) == 0u);
+
     return 0;
 }

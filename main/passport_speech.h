@@ -43,6 +43,11 @@ esp_err_t passport_speech_request_speak(const char *text);
 // Describe the voice path for the console.
 void passport_speech_report(char *out, size_t out_size);
 
+// The two values the web console's diagnostics page needs without formatting the whole report: what the
+// voice state machine is doing, and how many turns have run since boot.
+const char *passport_speech_state_name(void);
+unsigned passport_speech_turns(void);
+
 // The peak below which a recording counts as an empty room. The default is **-1, meaning "derive it
 // from the room"**: the boot warm-up measures the room and the gate becomes twice that peak, clamped
 // between 300 and 4000. A fixed number was a guess about a room nobody had measured, and the guesses

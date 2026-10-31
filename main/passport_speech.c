@@ -177,6 +177,16 @@ int passport_speech_silence_peak(void)
     return s_silence_peak;
 }
 
+const char *passport_speech_state_name(void)
+{
+    return passport_voice_state_name(s_voice.state);
+}
+
+unsigned passport_speech_turns(void)
+{
+    return s_turns;
+}
+
 void passport_speech_report(char *out, size_t out_size)
 {
     if (out == NULL || out_size == 0u) {
