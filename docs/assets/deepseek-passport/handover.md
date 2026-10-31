@@ -203,6 +203,7 @@ one is still open.
 | [`components/bsp/`](../../../components/bsp) | The board support package, upstream and reused |
 | [`tools/`](../../../tools) | The gate, the fixture generator, the stand-in bridge, the QR checker, and the console driver |
 | [`tools/passport_bridge.py`](../../../tools/passport_bridge.py) | **The companion bridge**: speech-to-text, the spoken answer, and the work screen's document. `--fake` needs no key, SiliconFlow is the default, DashScope is the Mandarin-quality alternative |
+| [`tools/start_bridge.py`](../../../tools/start_bridge.py) | Starts the bridge on the address this computer actually has, and prints the device commands that point at it — the answer to a stale address, which otherwise looks exactly like broken firmware |
 | [`tools/mock_bridge.py`](../../../tools/mock_bridge.py) | The minimal stand-in used to verify the device's half of the protocol before the real bridge existed |
 | [`tools/passport-console.ps1`](../../../tools/passport-console.ps1) | Drives the device's serial console: waits for the prompt instead of sleeping, so a reading is repeatable rather than intermittent |
 

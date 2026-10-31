@@ -86,6 +86,25 @@ both sides fixes it.
 | `gate` in the thousands | The threshold is above a real voice; see above |
 | `last="capture failed: …"` | The microphone path failed, not the network |
 
+## Pointing the device at this computer without guessing the address
+
+`ESP_ERR_HTTP_CONNECT` is almost always "the address moved". Rather than reading `ipconfig` and copying a
+number by hand:
+
+```text
+python tools/start_bridge.py --print-only
+```
+
+The launcher asks the operating system which address this machine would use to reach the LAN, refuses to
+offer a loopback or link-local one to a device, starts the bridge bound to that address, and prints the two
+console lines that point the device at it — with the token it generated, so both ends match without anyone
+copying a secret. `--fake` runs it with a canned transcript and a tone, so the whole path can be checked
+with no provider key. Without provider credentials it says so instead of starting something that will fail
+on the first request.
+
+Nothing is written to the device: run the printed lines yourself, or add `--apply` to have the console
+driver run them. Flashing is not part of this tool.
+
 ## Changing the configuration without the web page
 
 ```text

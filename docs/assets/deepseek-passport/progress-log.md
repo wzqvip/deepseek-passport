@@ -19,6 +19,25 @@ Rules for this log:
 
 ---
 
+## 2026-10-31 — A launcher, because the address will move again
+
+The previous entry ended with a stale address costing an evening. That will happen again: a laptop changes
+network, DHCP hands out a different lease, and the device keeps a string that now points at nothing while
+looking exactly like broken firmware.
+
+`tools/start_bridge.py` turns that diagnosis into one command. It asks the operating system which address
+this machine would use to reach the LAN — a UDP `connect` only binds a route and sends nothing — refuses to
+offer loopback or link-local addresses to a device, starts the bridge bound to that address, and prints the
+two console lines that point the device at it along with the token it generated, so both ends match without
+anyone copying a secret. `--fake` needs no provider key; without one the tool says the bridge will refuse
+provider calls rather than starting something that fails on the first request.
+
+The decisions are pure functions with thirteen tests: which addresses are unusable, that saving is a
+separate step from setting, that the printed lines stay ASCII because the console mangles anything else,
+that `--print-only` really starts nothing, and that an unusable address exits 2 with help instead of printing
+a URL the device cannot use. Nothing in it writes to the device unless `--apply` is given, and it has no
+path to flashing.
+
 ## 2026-10-31 — The device had nowhere to send a turn, and the console said so
 
 A second read-only session, this time reading the configuration, found the reason "holding OK does nothing"
