@@ -142,9 +142,16 @@ esp_err_t passport_http_request(const passport_http_request_t *request,
             if (more > 0) result->truncated = true;
             if (more < 0) err = ESP_FAIL;
         }
-        if (err == ESP_OK && !result->truncated &&
+        // A declared length that was not delivered is a truncated response, and a caller that parsed it
+        // would silently accept half a JSON document. That is what this final check is for.
+        //
+        // It is deliberately narrower than "the client says it did not finish". A response delimited by
+        // the connection closing (HTTP/1.0 style, no Content-Length and no chunking) never reports
+        // itself complete, and failing those would turn a working provider into "transport error".
+        // Only a shortfall against a length the server itself announced is treated as a failure.
+        if (err == ESP_OK && !result->truncated && content_length > 0 && total < content_length &&
             !esp_http_client_is_complete_data_received(client)) {
-            err = ESP_FAIL; // Timeout/early EOF is not a successful JSON response.
+            err = ESP_FAIL;
         }
         result->elapsed_ms = (esp_timer_get_time() - started_us) / 1000;
     } while (false);

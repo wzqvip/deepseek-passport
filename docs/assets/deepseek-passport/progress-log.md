@@ -19,6 +19,25 @@ Rules for this log:
 
 ---
 
+## 2026-10-31 — The corner answers the two questions a glance actually asks
+
+The status strip reported the network and the battery, which are the two the upstream convention names.
+The two a person holding this device asks are different: *is it listening to me right now* and *is there
+work waiting on the other screen*. Both are now words in the strip — `MIC` while the microphone is open,
+`WORK` while a published task is not idle — and both are blank when the answer is no, so the corner is a
+report rather than decoration. The values are read from the speech worker and from the last work document
+each second, not cached separately, and LVGL is only touched when the value changes.
+
+The same pass narrowed the HTTP truncation check this session had added. Failing any response the client
+did not mark complete would also fail a response delimited by the connection closing, which is legal
+HTTP/1.0 and is how some providers answer; only a shortfall against a length the server itself announced
+is now a transport error.
+
+And two claims in the handover were older than the firmware: it said the device "knows how to sleep" and
+that speech is always streamed to a bridge. Standby is backlight-off with the connection kept, deep sleep
+is refused, and direct provider calls exist alongside the bridge. Both languages were corrected rather
+than left for a reader to disprove later.
+
 ## 2026-10-31 — The wake press talks again, and a discarded turn says why
 
 Two things the owner would have felt, found by reading rather than by running.

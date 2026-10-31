@@ -29,11 +29,17 @@ No new provider credentials were read or stored, and no live paid requests were 
 ## 1. What it is
 
 A pocket-sized DeepSeek companion on an ESP32-C3. Its home screen is a pixel pet that breathes and
-blinks. Hold a button, speak, and release: the speech is streamed to a companion bridge on the local
-network, transcribed, sent to DeepSeek, and the answer comes back on the screen and out of the speaker.
-A second screen mirrors a desktop work session — task, progress and a question with options — answered
-with the same three buttons. It provisions itself over a hotspot with a QR code and a web console, and
-it knows how to sleep.
+blinks. Hold a button, speak, and release: the recording is transcribed, sent to DeepSeek, and the answer
+comes back on the screen and out of the speaker. Speech to text and text to speech can run either through
+a companion bridge on the local network or directly from the device to a configured provider; direct
+recording is limited to a few seconds of PCM because there is no PSRAM, and the bridge carries longer
+turns. A second screen shows a work session published by the companion — task, progress and a question
+with options — answered with the same three buttons. It provisions itself over a hotspot with a QR code and
+a web console, and its standby turns the backlight off while staying connected.
+
+Two limits are stated here rather than discovered later: the work screen shows tasks the companion
+publishes, which is not the same as mirroring an existing DeepSeek Harness session, and deep sleep is
+refused because no producer-stop handshake exists yet.
 
 The interface is this application's own: the upstream demo's menu, screens and visual shell were removed,
 not renamed. Nothing under `main/` or `tests/` mentions `demo` any more.

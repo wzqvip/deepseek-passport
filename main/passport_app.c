@@ -84,6 +84,13 @@ static lv_obj_t *s_screen;
 static lv_obj_t *s_battery;
 static lv_obj_t *s_wifi;
 static lv_obj_t *s_wifi_bars[3];
+// The two states the top strip reports besides the network and the battery: an open microphone, and a
+// work session waiting on the other screen. Cached so the once-a-second refresh only touches LVGL when
+// something actually changed.
+static lv_obj_t *s_mic;
+static lv_obj_t *s_work_indicator;
+static bool s_mic_shown;
+static bool s_work_shown;
 
 // The hint line, and the menu.
 #define HINT_DEFAULT "按住OK说话   长按DOWN工作\n长按UP设置   双击UP待机"
@@ -225,6 +232,17 @@ static void build_home(void)
     lv_obj_set_style_text_align(s_battery, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_text(s_battery, "--");
     plain(s_screen, 0, 26, 240, 2, APP_ACCENT);
+
+    // The other two states a glance should answer, in the space the title leaves: whether the
+    // microphone is open right now, and whether a work session is on the other screen. Both are words
+    // rather than icons because a 240-pixel panel held in daylight does not show an icon honestly, and
+    // both are blank when the answer is "no" so the corner is not decoration.
+    s_mic = label(s_screen, 74, 6, &lv_font_montserrat_14, APP_MUTED, "mic");
+    lv_obj_set_width(s_mic, 30);
+    lv_label_set_text(s_mic, "");
+    s_work_indicator = label(s_screen, 106, 6, &lv_font_montserrat_14, APP_MUTED, "work_state");
+    lv_obj_set_width(s_work_indicator, 34);
+    lv_label_set_text(s_work_indicator, "");
 
     // Conversation area: a panel with an accent edge, not a demo card. Named so the
     // answer inside it is addressable from the console as "chat/bubble".
@@ -820,6 +838,29 @@ static void wifi_refresh(void)
     bsp_lvgl_unlock();
 }
 
+// The top strip's two extra states. Reads the speech worker and the last work document rather than
+// keeping its own copy of either, so what the corner says is what the rest of the device is doing.
+static void indicators_refresh(void)
+{
+    if (!bsp_lvgl_lock(200)) {
+        return;
+    }
+    const bool listening = passport_speech_listening();
+    if (s_mic != NULL && listening != s_mic_shown) {
+        s_mic_shown = listening;
+        lv_label_set_text(s_mic, listening ? "MIC" : "");
+        lv_obj_set_style_text_color(s_mic, lv_color_hex(listening ? APP_ACCENT : APP_MUTED), 0);
+    }
+    const bool working = (s_work_view.task[0] != '\0') && (s_work_view.state != PASSPORT_WORK_IDLE);
+    if (s_work_indicator != NULL && working != s_work_shown) {
+        s_work_shown = working;
+        lv_label_set_text(s_work_indicator, working ? "WORK" : "");
+        lv_obj_set_style_text_color(s_work_indicator,
+                                    lv_color_hex(working ? APP_ACCENT : APP_MUTED), 0);
+    }
+    bsp_lvgl_unlock();
+}
+
 static void app_task(void *arg)
 {
     (void)arg;
@@ -855,6 +896,7 @@ static void app_task(void *arg)
             // "connecting" for up to five seconds after the link came up.
             if (waited % 1000 == 0) {
                 wifi_refresh();
+                indicators_refresh();
             }
             settings_act_t act = SETTINGS_ACT_NONE;
             uint32_t generation = 0;
@@ -1195,9 +1237,17 @@ void passport_app_stop(void)
         }
         s_screen = NULL;
         s_battery = NULL;
+        s_mic = NULL;
+        s_work_indicator = NULL;
+        s_mic_shown = false;
+        s_work_shown = false;
         s_bubble = NULL;
         s_mood = NULL;
         s_hint = NULL;
+        for (int i = 0; i < 3; i++) {
+            s_wifi_bars[i] = NULL;
+        }
+        s_wifi = NULL;
         bsp_lvgl_unlock();
     }
 }
