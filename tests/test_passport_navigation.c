@@ -36,10 +36,24 @@ int main(void)
     assert(key(&n, PASSPORT_NAV_OK, PASSPORT_NAV_RELEASE) == PASSPORT_NAV_TALK_UP);
     for (int page = PASSPORT_PAGE_HOME; page <= PASSPORT_PAGE_WORK; ++page) {
         passport_navigation_show(&n, (passport_page_t)page);
-        assert(passport_navigation_key(&n, PASSPORT_NAV_OK, PASSPORT_NAV_PRESS, true) == PASSPORT_NAV_NONE);
-        assert(key(&n, PASSPORT_NAV_OK, PASSPORT_NAV_LONG) == PASSPORT_NAV_NONE);
+        // Waking the screen with OK starts talking on the one page that has a talk button, and stays
+        // silent everywhere else: the press that lights the screen must not also act on a menu.
+        const passport_nav_action_t woke_press =
+            passport_navigation_key(&n, PASSPORT_NAV_OK, PASSPORT_NAV_PRESS, true);
+        assert(woke_press == (page == PASSPORT_PAGE_HOME ? PASSPORT_NAV_TALK_DOWN
+                                                         : PASSPORT_NAV_NONE));
+        if (woke_press == PASSPORT_NAV_TALK_DOWN) {
+            // The release that ends that turn is honoured, whatever page is showing by then.
+            passport_navigation_show(&n, PASSPORT_PAGE_WORK);
+            assert(key(&n, PASSPORT_NAV_OK, PASSPORT_NAV_RELEASE) == PASSPORT_NAV_TALK_UP);
+        }
+        key(&n, PASSPORT_NAV_OK, PASSPORT_NAV_PRESS);
+        key(&n, PASSPORT_NAV_OK, PASSPORT_NAV_RELEASE);
+        passport_navigation_show(&n, (passport_page_t)page);
+        // A waking click — the tail of a press already consumed — must not select anything either.
+        assert(passport_navigation_key(&n, PASSPORT_NAV_OK, PASSPORT_NAV_CLICK, true) ==
+               PASSPORT_NAV_NONE);
         assert(key(&n, PASSPORT_NAV_OK, PASSPORT_NAV_RELEASE) == PASSPORT_NAV_NONE);
-        assert(key(&n, PASSPORT_NAV_OK, PASSPORT_NAV_CLICK) == PASSPORT_NAV_NONE);
         assert(!n.talking);
     }
     passport_navigation_show(&n, PASSPORT_PAGE_HOME);

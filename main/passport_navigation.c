@@ -33,7 +33,21 @@ passport_nav_action_t passport_navigation_key(passport_navigation_t *nav,
         nav->talking = false;
         return PASSPORT_NAV_TALK_UP;
     }
-    if (woke) nav->suppressed |= bit;
+    if (woke) {
+        // A press that woke the screen is consumed: the same press must not also page through a menu or
+        // answer a question nobody could see. The talk button is the exception, and only on the screen
+        // that has one. Someone holding OK on a dark device means "I am about to speak"; making them
+        // press it twice — once to light the screen, once to talk — reads as a device that ignored
+        // them, which is exactly what the owner reported. The silence gate is what makes this safe: a
+        // press in a pocket opens the microphone, hears a room and uploads nothing.
+        if (key == PASSPORT_NAV_OK && event == PASSPORT_NAV_PRESS &&
+            nav->page == PASSPORT_PAGE_HOME && !nav->talking) {
+            nav->talking = true;
+            return PASSPORT_NAV_TALK_DOWN;
+        }
+        nav->suppressed |= bit;
+        return PASSPORT_NAV_NONE;
+    }
     if (nav->suppressed & bit) return PASSPORT_NAV_NONE;
     if (event == PASSPORT_NAV_LONG && key == PASSPORT_NAV_OK && nav->page != PASSPORT_PAGE_HOME) {
         nav->suppressed |= bit;

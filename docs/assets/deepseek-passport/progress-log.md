@@ -19,6 +19,21 @@ Rules for this log:
 
 ---
 
+## 2026-10-31 — The wake press talks again, and a discarded turn says why
+
+Two things the owner would have felt, found by reading rather than by running.
+
+The navigation reducer swallowed every press that woke the screen — correct for a menu, wrong for the
+talk button. Holding OK on a dark device therefore needed two presses again, which is the complaint
+that started this sequence of fixes. A waking OK press on the home screen now starts the turn, and the
+release still ends it whatever page is showing by then; on settings, work and setup a waking press is
+still consumed, because there it would select something the owner could not see. The regression test
+covers all four pages and the waking click that follows.
+
+And a turn discarded as silence now prints the peak it measured against the threshold it used, with the
+console command that changes it. A threshold set above a quiet voice looks exactly like a broken device,
+and only the owner can tell those apart; "no sound heard" hid which one it was.
+
 ## 2026-10-31 — A stored blob is bytes, not text
 
 The configuration that comes back from NVS was checked only for size and version. Nothing verified that

@@ -73,6 +73,11 @@ static char s_last_transcript[PASSPORT_WORK_QUESTION_MAX];
 static size_t s_last_bytes;
 static unsigned s_last_chunks;
 static unsigned s_turns;
+// The peak and the threshold of the last recording, kept so a discarded turn can say *why* instead of
+// only that nothing was heard. A room too loud for the gate is the difference between "the device is
+// broken" and "this threshold does not suit this room", and only the owner can tell those apart.
+static volatile unsigned s_last_peak;
+static volatile int s_last_gate;
 // The peak below which a recording is treated as an empty room. -1 means "derive it from the room",
 // which is the default: a fixed number is a guess about a room nobody has measured. The console can
 // pin a value, including 0 for "never treat anything as silence".
@@ -235,7 +240,9 @@ static int direct_turn(void)
     }
     s_last_bytes = bytes; s_last_chunks = bytes / 640;
     if (s_cancelled) { free(pcm); return -1; }
-    if (!bytes || peak < (unsigned)effective_gate()) { free(pcm); return -2; }
+    s_last_peak = peak;
+    s_last_gate = effective_gate();
+    if (!bytes || peak < (unsigned)s_last_gate) { free(pcm); return -2; }
     passport_app_show_status("正在转写…", PASSPORT_PET_THINKING);
     uint8_t wav[44]; passport_provider_wav(wav, bytes);
     const char *tail = passport_provider_stt_suffix();
@@ -425,6 +432,8 @@ static int stream_turn(void)
     // audio has already been streamed — that is the price of not buffering it — but its transcript
     // is discarded rather than asked for, which still saves the provider call and its cost.
     const int gate = effective_gate();
+    s_last_peak = level.peak;
+    s_last_gate = gate;
     if (gate > 0 && level.peak < (unsigned)gate) {
         snprintf(s_last, sizeof(s_last), "%u KB, peak %u below gate %d: discarded",
                  (unsigned)(bytes / 1024u), level.peak, gate);
@@ -865,8 +874,14 @@ static void run_turn(void)
         return;
     }
     if (result == -2) {
-        // Silence is not a failure: it is a room with nobody talking in it.
-        passport_app_show_status("没听到声音", PASSPORT_PET_CURIOUS);
+        // Silence is not a failure: it is a room with nobody talking in it. But the numbers matter,
+        // because a threshold set above a quiet voice looks exactly like a broken device, and the
+        // owner is the only one who can say whether that is what happened. The console command is
+        // named here because there is no other way to change it today.
+        char message[128];
+        snprintf(message, sizeof(message), "太安静了(峰值%u/阈值%d)\n串口 voice gate 600 可调",
+                 (unsigned)s_last_peak, s_last_gate);
+        passport_app_show_status(message, PASSPORT_PET_CURIOUS);
         passport_voice_handle(&s_voice, PASSPORT_VOICE_EV_RESET);
         return;
     }
