@@ -154,6 +154,7 @@ run_static_checks() {
     PYTHONDONTWRITEBYTECODE=1 "${PYTHON}" tests/test_passport_bridge.py
     PYTHONDONTWRITEBYTECODE=1 "${PYTHON}" tests/test_passport_work_companion.py
     PYTHONDONTWRITEBYTECODE=1 "${PYTHON}" tests/test_start_bridge.py
+    PYTHONDONTWRITEBYTECODE=1 "${PYTHON}" tests/test_passport_agent.py
     PYTHONDONTWRITEBYTECODE=1 "${PYTHON}" tests/test_check_repo.py
     PYTHONDONTWRITEBYTECODE=1 "${PYTHON}" tests/test_verify_firmware.py
     PYTHONDONTWRITEBYTECODE=1 "${PYTHON}" tests/test_archive_firmware.py

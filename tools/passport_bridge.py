@@ -109,12 +109,16 @@ def validate_status(document):
     """Keep the flat wire document within the firmware's UTF-8 buffer limits."""
     if not isinstance(document, dict):
         raise RequestError(400, "status must be an object")
-    allowed = {"task", "state", "progress", "question", "question_id", "selected"}
+    allowed = {"task", "state", "progress", "question", "question_id", "selected", "preview"}
     allowed.update("option" + str(i) for i in range(4))
+    # The machine name of each choice, so a receiving program can switch on an identifier instead of on
+    # the text a human happens to read. Optional: a question typed by hand has labels only.
+    allowed.update("action" + str(i) for i in range(4))
     if set(document) - allowed:
         raise RequestError(400, "unknown status fields")
-    for key, limit in [("task", 63), ("question", 95), ("question_id", 63)] + [
-            ("option" + str(i), 47) for i in range(4)]:
+    for key, limit in [("task", 63), ("question", 95), ("question_id", 63), ("preview", 95)] + [
+            ("option" + str(i), 47) for i in range(4)] + [
+            ("action" + str(i), 31) for i in range(4)]:
         value = document.get(key, "")
         try:
             valid = isinstance(value, str) and len(value.encode("utf-8")) <= limit and "\0" not in value
@@ -576,7 +580,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/answer":
             answer = self._document()
-            if set(answer) - {"answer", "question_id"}:
+            if set(answer) - {"answer", "question_id", "action"}:
                 raise RequestError(400, "unknown answer fields")
             with self.server.lock:
                 status = self.server.get_status()
@@ -584,12 +588,22 @@ class Handler(BaseHTTPRequestHandler):
                 if not status.get("question") or answer.get("question_id", "") != qid:
                     raise RequestError(409, "question changed")
                 label = answer.get("answer")
+                action = answer.get("action")
                 options = [status.get("option" + str(i)) for i in range(4)]
-                if not isinstance(label, str) or not label or label not in options:
+                offered = [status.get("action" + str(i)) for i in range(4)]
+                if action is not None:
+                    # The machine name is what a receiving program switches on, so it is checked against
+                    # the offered actions: a stale or invented name must not be executed later.
+                    if not isinstance(action, str) or action not in [a for a in offered if a]:
+                        raise RequestError(400, "action is not an offered choice")
+                    if isinstance(label, str) and label and label not in options:
+                        raise RequestError(400, "answer is not an offered option")
+                elif not isinstance(label, str) or not label or label not in options:
                     raise RequestError(400, "answer is not an offered option")
                 key = qid or "legacy"
                 previous = self.server.answers.get(key)
-                result = {"question_id": qid, "answer": label}
+                result = {"question_id": qid, "answer": label if isinstance(label, str) else "",
+                          "action": action if isinstance(action, str) else ""}
                 if previous and previous != result:
                     raise RequestError(409, "question already answered")
                 self.server.answers[key] = result

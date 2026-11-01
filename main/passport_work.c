@@ -68,6 +68,7 @@ bool passport_work_parse(const char *json, passport_work_view_t *view)
 
     read_text(json, len, "task", next.task, sizeof(next.task));
     read_text(json, len, "question", next.question, sizeof(next.question));
+    read_text(json, len, "preview", next.preview, sizeof(next.preview));
     const passport_json_status_t id_status = passport_json_string(
         json, len, "question_id", next.question_id, sizeof(next.question_id), NULL);
     if (id_status != PASSPORT_JSON_OK && id_status != PASSPORT_JSON_NOT_FOUND) {
@@ -98,6 +99,12 @@ bool passport_work_parse(const char *json, passport_work_view_t *view)
         }
         memcpy(next.options[next.option_count], value, sizeof(next.options[0]));
         next.options[next.option_count][sizeof(next.options[0]) - 1u] = '\0';
+        // The machine name of the same option, when the publisher supplied one. Absent is normal: a
+        // question typed at the console has labels but no action names, and the label is then the answer.
+        char action_key[16];
+        snprintf(action_key, sizeof(action_key), "action%d", i);
+        read_text(json, len, action_key, next.actions[next.option_count],
+                  sizeof(next.actions[0]));
         next.option_count++;
     }
 
@@ -127,12 +134,26 @@ bool passport_work_same_question(const passport_work_view_t *a, const passport_w
         strcmp(a->question, b->question) != 0 || a->option_count != b->option_count) {
         return false;
     }
+    // The preview is compared too: it is the line the owner reads, so a new answer with the same question
+    // has to reach the screen even when nothing else about the question changed.
+    if (strcmp(a->preview, b->preview) != 0) {
+        return false;
+    }
     for (int i = 0; i < a->option_count; ++i) {
-        if (strcmp(a->options[i], b->options[i]) != 0) {
+        if (strcmp(a->options[i], b->options[i]) != 0 ||
+            strcmp(a->actions[i], b->actions[i]) != 0) {
             return false;
         }
     }
     return true;
+}
+
+const char *passport_work_selected_action(const passport_work_view_t *view)
+{
+    if (view == NULL || view->selected < 0 || view->selected >= view->option_count) {
+        return NULL;
+    }
+    return (view->actions[view->selected][0] != '\0') ? view->actions[view->selected] : NULL;
 }
 
 static bool append_json_string(const char *text, char *out, size_t cap, size_t *used)
@@ -158,29 +179,51 @@ static bool append_json_string(const char *text, char *out, size_t cap, size_t *
     return true;
 }
 
-bool passport_work_answer_json(const char *question_id, const char *answer,
+bool passport_work_choice_json(const char *question_id, const char *answer, const char *action,
                                char *out, size_t out_size)
 {
     if (out == NULL || out_size == 0) return false;
     out[0] = '\0';
-    if (answer == NULL || answer[0] == '\0' || out_size < 32) return false;
+    const bool has_answer = (answer != NULL && answer[0] != '\0');
+    const bool has_action = (action != NULL && action[0] != '\0');
+    if (!has_answer && !has_action) return false;
+    if (out_size < 48) return false;
+
     const char *id = question_id != NULL ? question_id : "";
     size_t used = 0;
     const char prefix[] = "{\"question_id\":";
     memcpy(out, prefix, sizeof(prefix) - 1);
     used = sizeof(prefix) - 1;
     if (!append_json_string(id, out, out_size, &used)) goto fail;
-    const char middle[] = ",\"answer\":";
-    if (used + sizeof(middle) >= out_size) goto fail;
-    memcpy(out + used, middle, sizeof(middle) - 1);
-    used += sizeof(middle) - 1;
-    if (!append_json_string(answer, out, out_size, &used) || used + 1 >= out_size) goto fail;
+    if (has_answer) {
+        const char middle[] = ",\"answer\":";
+        if (used + sizeof(middle) >= out_size) goto fail;
+        memcpy(out + used, middle, sizeof(middle) - 1);
+        used += sizeof(middle) - 1;
+        if (!append_json_string(answer, out, out_size, &used)) goto fail;
+    }
+    if (has_action) {
+        // The machine name of the choice. The receiving program switches on this, so a renamed button does
+        // not change behaviour; the label travels beside it for logs and for humans.
+        const char action_prefix[] = ",\"action\":";
+        if (used + sizeof(action_prefix) >= out_size) goto fail;
+        memcpy(out + used, action_prefix, sizeof(action_prefix) - 1);
+        used += sizeof(action_prefix) - 1;
+        if (!append_json_string(action, out, out_size, &used)) goto fail;
+    }
+    if (used + 1 >= out_size) goto fail;
     out[used++] = '}';
     out[used] = '\0';
     return true;
 fail:
     out[0] = '\0';
     return false;
+}
+
+bool passport_work_answer_json(const char *question_id, const char *answer,
+                               char *out, size_t out_size)
+{
+    return passport_work_choice_json(question_id, answer, NULL, out, out_size);
 }
 
 passport_work_announcement_t passport_work_announce(bool changed,

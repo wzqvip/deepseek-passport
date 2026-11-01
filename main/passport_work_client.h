@@ -27,6 +27,9 @@ void passport_work_client_poll_now(void);
 // call it from a task, not from the interface.
 esp_err_t passport_work_client_answer(const char *answer);
 esp_err_t passport_work_client_answer_for(const char *question_id, const char *answer);
+// Send the chosen action's machine name alongside (or instead of) its label. The device prefers this: a
+// publisher that renames a button should not break the program receiving the choice.
+esp_err_t passport_work_client_choice(const char *question_id, const char *answer, const char *action);
 
 // Describe the client's last attempt for the console.
 void passport_work_client_report(char *out, size_t out_size);

@@ -26,6 +26,8 @@
 #define PASSPORT_WORK_TASK_MAX    64
 #define PASSPORT_WORK_QUESTION_MAX 96
 #define PASSPORT_WORK_OPTION_MAX  48
+#define PASSPORT_WORK_PREVIEW_MAX 96
+#define PASSPORT_WORK_ACTION_MAX  32
 
 typedef enum {
     PASSPORT_WORK_IDLE = 0,     // nothing is running
@@ -39,7 +41,14 @@ typedef struct {
     char task[PASSPORT_WORK_TASK_MAX];
     char question[PASSPORT_WORK_QUESTION_MAX];
     char question_id[64];       // opaque bridge identity; never truncate
+    // One line about what the computer just produced. The reply itself stays on the computer: a 240x320
+    // panel cannot show an agent's answer, and trying is what made this feel impossible. The device shows
+    // this line, and the owner opens the full text on the computer with an action.
+    char preview[PASSPORT_WORK_PREVIEW_MAX];
     char options[PASSPORT_WORK_MAX_OPTIONS][PASSPORT_WORK_OPTION_MAX];
+    // The machine name of each option, when the publisher supplied one. The device sends this back instead
+    // of the label, so renaming a button in one place never breaks the program that receives the choice.
+    char actions[PASSPORT_WORK_MAX_OPTIONS][PASSPORT_WORK_ACTION_MAX];
     int option_count;
     int selected;
     int progress;               // 0 to 100, or -1 when the document did not say
@@ -88,8 +97,14 @@ bool passport_work_parse(const char *json, passport_work_view_t *view);
 
 // Compare identity and full visible options, excluding local selection/acknowledgment.
 bool passport_work_same_question(const passport_work_view_t *a, const passport_work_view_t *b);
+// The machine name to send back for the current selection, or NULL when the publisher supplied only labels.
+const char *passport_work_selected_action(const passport_work_view_t *view);
 // Encode an answer without truncating or interpolating unescaped user text.
 bool passport_work_answer_json(const char *question_id, const char *answer,
+                               char *out, size_t out_size);
+// The same, plus the machine name of the chosen action. Either field may be absent; at least one is
+// required, because a message that carries neither says nothing.
+bool passport_work_choice_json(const char *question_id, const char *answer, const char *action,
                                char *out, size_t out_size);
 
 // Apply one button press. Returns what the caller should do.

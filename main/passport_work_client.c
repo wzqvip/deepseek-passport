@@ -86,7 +86,12 @@ esp_err_t passport_work_client_answer(const char *answer)
 
 esp_err_t passport_work_client_answer_for(const char *question_id, const char *answer)
 {
-    if (answer == NULL || answer[0] == '\0') {
+    return passport_work_client_choice(question_id, answer, NULL);
+}
+
+esp_err_t passport_work_client_choice(const char *question_id, const char *answer, const char *action)
+{
+    if ((answer == NULL || answer[0] == '\0') && (action == NULL || action[0] == '\0')) {
         return ESP_ERR_INVALID_ARG;
     }
     const passport_config_t *cfg = passport_config_current();
@@ -101,7 +106,7 @@ esp_err_t passport_work_client_answer_for(const char *question_id, const char *a
     build_url(PASSPORT_WORK_PATH_ANSWER, url, sizeof(url));
 
     char body[768];
-    if (!passport_work_answer_json(question_id, answer, body, sizeof(body))) {
+    if (!passport_work_choice_json(question_id, answer, action, body, sizeof(body))) {
         return ESP_ERR_INVALID_SIZE;
     }
 

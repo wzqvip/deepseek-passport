@@ -19,6 +19,32 @@ Rules for this log:
 
 ---
 
+## 2026-11-01 — Long answers leave the device; the pocket gets a preview and actions
+
+The owner said the project felt impossible, and named the reason: an agent's reply is long, and there is no
+way to read it on a 240x320 panel with three buttons. That is correct, and the fix is not to make the panel
+bigger — it is to stop sending the reply.
+
+The wire document gained two things. `preview` is one line about what the computer produced, cut to fit.
+`action0..3` are machine names for the choices, so the device sends `continue` rather than the text a person
+happens to read; renaming a button can no longer silently break the program that receives the choice. The
+work screen shows title, preview, question and up to four actions in that order, and the bridge refuses an
+action it did not offer.
+
+`tools/passport_agent.py` is the computer half. `publish` sends a task the owner already has; `run` executes
+a command, takes **the last meaningful line** of its output as the preview (a build log's outcome is at the
+end, not the beginning), publishes it, and waits for the button. It needs no model to summarise, which is
+the point: the compression that makes the device usable is a few lines of Python, not a second inference.
+
+Verified on the hardware, twice: `publish --title "build" --preview "84 passed, 2 skipped" --actions
+"details:Details,retry:Rerun"` put exactly those four lines on the panel, the second action was selected with
+DOWN, OK was pressed, and the waiting desktop process printed `chose 'retry'`. Before that, a task with three
+actions was published in Chinese, the first action was chosen with OK, and the bridge recorded the action
+name `continue` beside the label the owner read.
+
+That is the product the owner described, at its smallest useful size: long work happens on the computer, the
+pocket shows one line and a few buttons, and the choice comes back as an identifier.
+
 ## 2026-10-31 — The pocket control loop works, and it is now immediate
 
 The owner described the product precisely: an accessory for the computer, services on the computer,

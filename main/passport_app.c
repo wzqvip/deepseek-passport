@@ -516,6 +516,7 @@ static lv_obj_t *s_work_state;
 static lv_obj_t *s_work_bar;
 static lv_obj_t *s_work_percent;
 static lv_obj_t *s_work_question;
+static lv_obj_t *s_work_preview;
 static lv_obj_t *s_work_options[PASSPORT_WORK_MAX_OPTIONS];
 static passport_work_view_t s_work_view;
 
@@ -535,25 +536,34 @@ static void build_work(void)
     lv_obj_set_style_text_align(s_work_state, LV_TEXT_ALIGN_RIGHT, 0);
     plain(s_work, 0, 28, 240, 2, APP_ACCENT);
 
-    s_work_task = label(s_work, 10, 36, passport_font_body(), APP_PAPER, "work_task");
+    s_work_task = label(s_work, 10, 32, passport_font_body(), APP_PAPER, "work_task");
     lv_obj_set_width(s_work_task, 220);
-    lv_obj_set_height(s_work_task, 44);
+    lv_obj_set_height(s_work_task, 30);
     lv_label_set_long_mode(s_work_task, LV_LABEL_LONG_WRAP);
+
+    // The preview: one or two lines about what the computer produced. Deliberately the only place a reply
+    // is shown — the panel cannot hold an answer, and pretending otherwise is what made the device feel
+    // useless. The full text is one action away, on the computer.
+    s_work_preview = label(s_work, 10, 62, passport_font_body(), APP_MUTED, "work_preview");
+    lv_obj_set_width(s_work_preview, 220);
+    lv_obj_set_height(s_work_preview, 34);
+    lv_label_set_long_mode(s_work_preview, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(s_work_preview, "");
 
     // The bar and its number: the number is separate so the console can read the percentage
     // without interpreting a widget's value.
     s_work_bar = lv_bar_create(s_work);
     lv_obj_set_size(s_work_bar, 180, 12);
-    lv_obj_set_pos(s_work_bar, 10, 86);
+    lv_obj_set_pos(s_work_bar, 10, 100);
     lv_bar_set_range(s_work_bar, 0, 100);
     lv_obj_set_style_bg_color(s_work_bar, lv_color_hex(APP_PANEL), LV_PART_MAIN);
     lv_obj_set_style_bg_color(s_work_bar, lv_color_hex(APP_ACCENT), LV_PART_INDICATOR);
     lv_obj_set_name(s_work_bar, "work_bar");
-    s_work_percent = label(s_work, 196, 84, &lv_font_montserrat_14, APP_PAPER, "work_percent");
+    s_work_percent = label(s_work, 196, 98, &lv_font_montserrat_14, APP_PAPER, "work_percent");
 
-    s_work_question = label(s_work, 10, 108, passport_font_body(), APP_PAPER, "work_question");
+    s_work_question = label(s_work, 10, 118, passport_font_body(), APP_PAPER, "work_question");
     lv_obj_set_width(s_work_question, 220);
-    lv_obj_set_height(s_work_question, 44);
+    lv_obj_set_height(s_work_question, 30);
     lv_label_set_long_mode(s_work_question, LV_LABEL_LONG_WRAP);
 
     // Four option rows. The selected one is drawn in the accent colour with a marker, which is
@@ -564,7 +574,7 @@ static void build_work(void)
     for (int i = 0; i < PASSPORT_WORK_MAX_OPTIONS; i++) {
         char name[16];
         snprintf(name, sizeof(name), "work_option%d", i);
-        s_work_options[i] = label(s_work, 10, 158 + 26 * i, passport_font_body(), APP_MUTED, name);
+        s_work_options[i] = label(s_work, 10, 152 + 24 * i, passport_font_body(), APP_MUTED, name);
         lv_obj_set_width(s_work_options[i], 220);
     }
 
@@ -597,6 +607,16 @@ static void work_refresh(void)
     lv_obj_add_flag(s_work_question, (s_work_view.question[0] != '\0') ? 0 : LV_OBJ_FLAG_HIDDEN);
     if (s_work_view.question[0] != '\0') {
         lv_obj_remove_flag(s_work_question, LV_OBJ_FLAG_HIDDEN);
+    }
+    // The one line about what the computer just produced. The full text stays there by design: a 240x320
+    // panel cannot show an agent's answer, and a device that tries is a device nobody uses.
+    if (s_work_preview != NULL) {
+        lv_label_set_text(s_work_preview, s_work_view.preview);
+        if (s_work_view.preview[0] != '\0') {
+            lv_obj_remove_flag(s_work_preview, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(s_work_preview, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 
     for (int i = 0; i < PASSPORT_WORK_MAX_OPTIONS; i++) {
@@ -932,8 +952,11 @@ static void app_task(void *arg)
             }
             if (send_answer) {
                 completed_answer = answer;
-                answer_result = passport_work_client_answer_for(answer.question_id,
-                    answer.options[answer.selected]);
+                // Send the label and, when the publisher named the action, its machine name too. The
+                // receiving program switches on the name; the label is for logs and for humans.
+                answer_result = passport_work_client_choice(answer.question_id,
+                    answer.options[answer.selected],
+                    passport_work_selected_action(&answer));
                 answer_result_ready = true;
             }
             // HTTP above can take seconds. Discard actions from a page/gesture
@@ -1227,6 +1250,7 @@ void passport_app_stop(void)
             s_work_bar = NULL;
             s_work_percent = NULL;
             s_work_question = NULL;
+            s_work_preview = NULL;
             for (int i = 0; i < PASSPORT_WORK_MAX_OPTIONS; i++) {
                 s_work_options[i] = NULL;
             }

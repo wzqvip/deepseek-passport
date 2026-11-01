@@ -51,6 +51,10 @@ class BridgeTests(unittest.TestCase):
         connection.close()
         return result
 
+    def get_json(self, path, timeout=10):
+        code, body = self.request("GET", path)
+        return json.loads(body)
+
     def post(self, path, document):
         code, data = self.request("POST", path, json.dumps(document).encode())
         return code, json.loads(data)
@@ -200,6 +204,39 @@ class BridgeTests(unittest.TestCase):
     def test_status_wait_must_be_a_number(self):
         status, _ = self.request("GET", "/work-status?wait=soon&since=-1")
         self.assertGreaterEqual(status, 400)
+
+    def test_actions_are_offered_recorded_and_rejected_when_invented(self):
+        # The device sends the machine name of the choice; a receiving program switches on that, so the
+        # bridge must only accept names it actually offered.
+        self.post("/work-status", {
+            "task": "refactor index.ts", "state": "waiting", "preview": "3 files, 84 lines",
+            "question": "how should I change it?",
+            "option0": "comments only", "action0": "conservative",
+            "option1": "split functions", "action1": "aggressive",
+        })
+        status = self.get_json("/work-status")
+        qid = status["question_id"]
+        self.assertEqual(status.get("action0"), "conservative")
+        self.assertEqual(status.get("preview"), "3 files, 84 lines")
+
+        invented = self.request("POST", "/answer", json.dumps(
+            {"question_id": qid, "action": "rm -rf"}).encode())
+        self.assertGreaterEqual(invented[0], 400)
+
+        accepted = self.request("POST", "/answer", json.dumps(
+            {"question_id": qid, "answer": "split functions", "action": "aggressive"}).encode())
+        self.assertEqual(accepted[0], 200)
+        code, body = self.request("GET", f"/answers?question_id={qid}")
+        self.assertEqual(code, 200)
+        recorded = json.loads(body)
+        self.assertEqual(recorded["ready"], 1)
+        self.assertEqual(recorded["action"], "aggressive")
+        self.assertEqual(recorded["answer"], "split functions")
+
+        # A second, different choice for the same question is refused: one question, one answer.
+        again = self.request("POST", "/answer", json.dumps(
+            {"question_id": qid, "action": "conservative"}).encode())
+        self.assertEqual(again[0], 409)
 
 if __name__ == "__main__":
     unittest.main()
